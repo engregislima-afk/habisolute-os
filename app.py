@@ -6,11 +6,102 @@ from datetime import date, datetime
 
 import streamlit as st
 import pandas as pd
+import base64
 
 from sqlalchemy import (
     create_engine, Column, Integer, String, Float, Date, ForeignKey, Text,
-    select, func
+    select, func, LargeBinary   # ⬅️ adicionado
 )
+def _ensure_medicoes_schema(engine):
+    """Garante a existência da tabela medicoes (fallback para bancos antigos)."""
+    with engine.begin() as conn:
+        tables = {r[0] for r in conn.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()}
+        if "medicoes" not in tables:
+            conn.exec_driver_sql("""
+                CREATE TABLE medicoes (
+                    id INTEGER PRIMARY KEY,
+                    obra_id INTEGER NOT NULL,
+                    numero INTEGER NOT NULL,
+                    periodo_ini DATE NOT NULL,
+                    periodo_fim DATE NOT NULL,
+                    criado_em DATE,
+                    FOREIGN KEY(obra_id) REFERENCES obras(id)
+                )
+            """)
+
+def _ensure_clientes_schema_and_backfill(engine):
+    """
+    Garante que a tabela clientes exista e que a tabela obras possua colunas de bloqueio/cliente_id.
+    Também faz o backfill do cliente_id usando o campo legado 'cliente' (nome).
+    """
+    with engine.begin() as conn:
+        # clientes
+        tables = {r[0] for r in conn.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()}
+        if "clientes" not in tables:
+            conn.exec_driver_sql("""
+                CREATE TABLE clientes (
+                    id INTEGER PRIMARY KEY,
+                    nome TEXT UNIQUE NOT NULL,
+                    documento TEXT, contato TEXT, email TEXT, telefone TEXT,
+                    ativo INTEGER DEFAULT 1,
+                    bloqueado INTEGER DEFAULT 0,
+                    bloqueado_motivo TEXT,
+                    bloqueado_desde DATE
+                )
+            """)
+
+        # colunas extras em obras
+        cols = {r[1] for r in conn.exec_driver_sql("PRAGMA table_info('obras')").fetchall()}
+        if "cliente_id" not in cols:
+            conn.exec_driver_sql("ALTER TABLE obras ADD COLUMN cliente_id INTEGER")
+        if "bloqueada" not in cols:
+            conn.exec_driver_sql("ALTER TABLE obras ADD COLUMN bloqueada INTEGER DEFAULT 0")
+        if "bloqueada_motivo" not in cols:
+            conn.exec_driver_sql("ALTER TABLE obras ADD COLUMN bloqueada_motivo TEXT")
+        if "bloqueada_desde" not in cols:
+            conn.exec_driver_sql("ALTER TABLE obras ADD COLUMN bloqueada_desde DATE")
+
+        # backfill cliente_id a partir de obras.cliente (nome)
+        obras = conn.exec_driver_sql(
+            "SELECT id, cliente FROM obras WHERE cliente IS NOT NULL AND TRIM(cliente)<>'' AND cliente_id IS NULL"
+        ).fetchall()
+        for oid, nome in obras:
+            nm = (nome or "").strip()
+            if not nm:
+                continue
+            row = conn.exec_driver_sql("SELECT id FROM clientes WHERE nome = ?", (nm,)).fetchone()
+            if row is None:
+                conn.exec_driver_sql("INSERT INTO clientes (nome, ativo) VALUES (?,1)", (nm,))
+                row = conn.exec_driver_sql("SELECT id FROM clientes WHERE nome = ?", (nm,)).fetchone()
+            conn.exec_driver_sql("UPDATE obras SET cliente_id=? WHERE id=?", (row[0], oid))
+
+def _ensure_obras_attachments(engine):
+    """Garante as 3 colunas TEXT de anexos na tabela obras (caminho/arquivo)."""
+    with engine.begin() as conn:
+        cols = {r[1] for r in conn.exec_driver_sql("PRAGMA table_info('obras')").fetchall()}
+        if "anexo_proposta" not in cols:
+            conn.exec_driver_sql("ALTER TABLE obras ADD COLUMN anexo_proposta TEXT")
+        if "anexo_contrato" not in cols:
+            conn.exec_driver_sql("ALTER TABLE obras ADD COLUMN anexo_contrato TEXT")
+        if "anexo_cnpj" not in cols:
+            conn.exec_driver_sql("ALTER TABLE obras ADD COLUMN anexo_cnpj TEXT")
+
+# (opcional) alternativa em BLOB:
+def _ensure_obra_docs_schema(engine):
+    """Versão BLOB: salva o arquivo no SQLite (use esta OU a de TEXT acima)."""
+    with engine.begin() as conn:
+        cols = {r[1] for r in conn.exec_driver_sql("PRAGMA table_info('obras')").fetchall()}
+        def add(coldef): conn.exec_driver_sql(f"ALTER TABLE obras ADD COLUMN {coldef}")
+        if "proposta_doc" not in cols:  add("proposta_doc BLOB")
+        if "proposta_nome" not in cols: add("proposta_nome TEXT")
+        if "contrato_doc" not in cols:  add("contrato_doc BLOB")
+        if "contrato_nome" not in cols: add("contrato_nome TEXT")
+        if "cnpj_doc" not in cols:      add("cnpj_doc BLOB")
+        if "cnpj_nome" not in cols:     add("cnpj_nome TEXT")
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship, Session, selectinload
 
 # ================= Streamlit UI / Tema (LARANJA FORTE + PRETO) =================
@@ -24,7 +115,7 @@ st.markdown("""
   --hb-card-border:#2a3142;
   --hb-text:#f5f5f5;
   --hb-muted:#c7cfdb;
-  --hb-accent:#ff4d00; /* laranja forte */
+  --hb-accent:#E65729; /* laranja forte */
   --hb-accent-2:#ff9b42;
 }
 html, body, [data-testid="stAppViewContainer"]{
@@ -37,7 +128,7 @@ html, body, [data-testid="stAppViewContainer"]{
 /* Títulos das seções em faixa LARANJA */
 .card h3, .section-title{
   background:var(--hb-accent);
-  color:#111!important;
+  color:#f7f7f7!important;
   font-weight:800;
   text-align:center;
   padding:.6rem 0;
@@ -105,6 +196,11 @@ class Obra(Base):
     bloqueada_motivo = Column(Text)
     bloqueada_desde = Column(Date)
 
+    # >>> NOVOS CAMPOS DE ANEXO <<<
+    anexo_proposta = Column(String)  # caminho do arquivo (ou None)
+    anexo_contrato = Column(String)  # caminho do arquivo (ou None)
+    anexo_cnpj     = Column(String)  # caminho do arquivo (ou None)
+
     cliente_ref = relationship("Cliente", back_populates="obras")
     os_list = relationship("OS", back_populates="obra", cascade="all, delete")
 
@@ -152,6 +248,22 @@ DB_PATH = Path(__file__).with_name("os_habisolute.db")
 engine = create_engine(f"sqlite:///{DB_PATH}", future=True, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 Base.metadata.create_all(engine)
+# PRAGMAs e índices (opcional, mas recomendado)
+with engine.begin() as conn:
+    conn.exec_driver_sql("PRAGMA journal_mode=WAL;")
+    conn.exec_driver_sql("PRAGMA synchronous=NORMAL;")
+    conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_os_obra_data ON os(obra_id, data_emissao);")
+    conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_os_status ON os(status);")
+    conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_os_numero ON os(numero);")
+    conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_ositem_osid ON os_itens(os_id);")
+    conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_medicoes_obra ON medicoes(obra_id);")
+
+# ===== Chamadas das “migrações leves” =====
+_ensure_medicoes_schema(engine)
+_ensure_clientes_schema_and_backfill(engine)
+_ensure_obras_attachments(engine)      # usamos anexos como TEXT (caminho/arquivo)
+# _ensure_obra_docs_schema(engine)     # <— se preferir BLOB, use esta e comente a de cima
+# =========================================
 
 # -------- PRAGMAs e índices (robustez/performance) --------
 with engine.begin() as conn:
@@ -181,6 +293,84 @@ def _ensure_medicoes_schema(engine):
             """)
 
 def _ensure_clientes_schema_and_backfill(engine):
+    """Garante que a tabela clientes exista e faz backfill do cliente_id em obras."""
+    with engine.begin() as conn:
+        # cria 'clientes' se não existir
+        tables = {r[0] for r in conn.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()}
+        if "clientes" not in tables:
+            conn.exec_driver_sql("""
+                CREATE TABLE clientes (
+                    id INTEGER PRIMARY KEY,
+                    nome TEXT UNIQUE NOT NULL,
+                    documento TEXT,
+                    contato TEXT,
+                    email TEXT,
+                    telefone TEXT,
+                    ativo INTEGER DEFAULT 1,
+                    bloqueado INTEGER DEFAULT 0,
+                    bloqueado_motivo TEXT,
+                    bloqueado_desde DATE
+                )
+            """)
+
+        # garante colunas em 'obras'
+        cols = {r[1] for r in conn.exec_driver_sql("PRAGMA table_info('obras')").fetchall()}
+        if "cliente_id" not in cols:
+            conn.exec_driver_sql("ALTER TABLE obras ADD COLUMN cliente_id INTEGER")
+        if "bloqueada" not in cols:
+            conn.exec_driver_sql("ALTER TABLE obras ADD COLUMN bloqueada INTEGER DEFAULT 0")
+        if "bloqueada_motivo" not in cols:
+            conn.exec_driver_sql("ALTER TABLE obras ADD COLUMN bloqueada_motivo TEXT")
+        if "bloqueada_desde" not in cols:
+            conn.exec_driver_sql("ALTER TABLE obras ADD COLUMN bloqueada_desde DATE")
+
+        # backfill: converte campo legado 'cliente' para cliente_id
+        obras = conn.exec_driver_sql(
+            "SELECT id, cliente FROM obras "
+            "WHERE cliente IS NOT NULL AND TRIM(cliente)<>'' AND (cliente_id IS NULL OR cliente_id='')"
+        ).fetchall()
+        for obra_id, nome_cli in obras:
+            nm = (nome_cli or "").strip()
+            if not nm:
+                continue
+            row = conn.exec_driver_sql("SELECT id FROM clientes WHERE nome = ?", (nm,)).fetchone()
+            if row is None:
+                conn.exec_driver_sql("INSERT INTO clientes (nome, ativo) VALUES (?, 1)", (nm,))
+                row = conn.exec_driver_sql("SELECT id FROM clientes WHERE nome = ?", (nm,)).fetchone()
+            conn.exec_driver_sql("UPDATE obras SET cliente_id=? WHERE id=?", (row[0], obra_id))
+
+
+def _ensure_obras_attachments(engine):
+    """Cria colunas de anexos (armazenando *caminho/URL* em TEXT) na tabela obras."""
+    with engine.begin() as conn:
+        cols = {r[1] for r in conn.exec_driver_sql("PRAGMA table_info('obras')").fetchall()}
+        if "anexo_proposta" not in cols:
+            conn.exec_driver_sql("ALTER TABLE obras ADD COLUMN anexo_proposta TEXT")
+        if "anexo_contrato" not in cols:
+            conn.exec_driver_sql("ALTER TABLE obras ADD COLUMN anexo_contrato TEXT")
+        if "anexo_cnpj" not in cols:
+            conn.exec_driver_sql("ALTER TABLE obras ADD COLUMN anexo_cnpj TEXT")
+
+
+def _ensure_obra_docs_schema(engine):
+    """
+    Alternativa: cria colunas para guardar os arquivos diretamente no banco (BLOB).
+    Use apenas se você REALMENTE quiser salvar bytes no SQLite.
+    """
+    with engine.begin() as conn:
+        cols = {r[1] for r in conn.exec_driver_sql("PRAGMA table_info('obras')").fetchall()}
+
+        def add(coldef: str):
+            conn.exec_driver_sql(f"ALTER TABLE obras ADD COLUMN {coldef}")
+
+        if "proposta_doc" not in cols:   add("proposta_doc BLOB")
+        if "proposta_nome" not in cols:  add("proposta_nome TEXT")
+        if "contrato_doc" not in cols:   add("contrato_doc BLOB")
+        if "contrato_nome" not in cols:  add("contrato_nome TEXT")
+        if "cnpj_doc" not in cols:       add("cnpj_doc BLOB")
+        if "cnpj_nome" not in cols:      add("cnpj_nome TEXT")
     with engine.begin() as conn:
         tables = {r[0] for r in conn.exec_driver_sql("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
         if "clientes" not in tables:
@@ -251,8 +441,124 @@ def gerar_numero_os(sess: Session) -> str:
 def format_brl(v: float) -> str:
     try:
         return f"R$ {float(v):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    except:
+    except Exception:
         return "R$ 0,00"
+
+
+# ==== Anexos de Obras (salvos em disco; caminho RELATIVO no SQLite) ====
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent
+ANEXOS_DIR = BASE_DIR / "anexos" / "obras"
+ANEXOS_DIR.mkdir(parents=True, exist_ok=True)
+
+_VALID_KINDS = {"cnpj", "proposta", "contrato"}
+
+def _save_anexo(uploaded_file, obra_id: int, kind: str) -> str | None:
+    """
+    Salva o arquivo em:
+      anexos/obras/obra_<id>/<kind>.<ext>
+    e retorna o CAMINHO RELATIVO (string) para gravar no SQLite.
+    """
+    if uploaded_file is None:
+        return None
+
+    kind = (kind or "").lower().strip()
+    if kind not in _VALID_KINDS:
+        raise ValueError(f"Tipo de anexo inválido: {kind}")
+
+    ext = Path(uploaded_file.name or f"{kind}.bin").suffix.lower() or ".bin"
+
+    obra_dir = ANEXOS_DIR / f"obra_{int(obra_id)}"
+    obra_dir.mkdir(parents=True, exist_ok=True)
+
+    tmp_path = obra_dir / f"{kind}_tmp{ext}"
+    try:
+        data = uploaded_file.getvalue()
+    except Exception:
+        try:
+            data = uploaded_file.getbuffer()
+        except Exception:
+            data = uploaded_file.read()
+    tmp_path.write_bytes(bytes(data))
+
+    final_path = obra_dir / f"{kind}{ext}"
+    if final_path.exists():
+        final_path.unlink()
+    tmp_path.replace(final_path)
+
+    return final_path.relative_to(BASE_DIR).as_posix()
+
+def _download_btn_if_exists(label: str, path_str: str | None) -> None:
+    """Mostra botão de download se o arquivo existir (aceita caminho relativo)."""
+    if not path_str:
+        return
+    p = Path(path_str)
+    if not p.is_absolute():
+        p = BASE_DIR / p
+    if p.exists() and p.is_file():
+        st.download_button(
+            label=label,
+            data=p.read_bytes(),
+            file_name=p.name,
+            mime="application/octet-stream",
+        )
+    ...
+    # ==== Anexos de Obras (arquivos salvos em disco; caminhos ficam no SQLite) ====
+APP_DIR = Path(__file__).parent
+ANEXOS_DIR = APP_DIR / "anexos_obras"
+ANEXOS_DIR.mkdir(parents=True, exist_ok=True)
+
+_VALID_KINDS = {"cnpj", "proposta", "contrato"}
+
+def _save_anexo(uploaded_file, obra_id: int, kind: str) -> str | None:
+    """
+    Salva o arquivo enviado em:
+      anexos_obras/obra_<id>/<kind>.<ext>
+    e retorna o caminho absoluto (string) que será gravado no SQLite.
+
+    Parâmetros
+    ----------
+    uploaded_file : st.uploaded_file_manager.UploadedFile | None
+    obra_id : int
+    kind : str  -> "cnpj", "proposta" ou "contrato"
+    """
+    if uploaded_file is None:
+        return None
+    kind = (kind or "").lower().strip()
+    if kind not in _VALID_KINDS:
+        raise ValueError(f"Tipo de anexo inválido: {kind}")
+
+    raw_name = uploaded_file.name or f"{kind}.bin"
+    ext = Path(raw_name).suffix.lower() or ".bin"
+
+    obra_dir = ANEXOS_DIR / f"obra_{int(obra_id)}"
+    obra_dir.mkdir(parents=True, exist_ok=True)
+
+    dest = obra_dir / f"{kind}{ext}"
+
+    try:
+        data = uploaded_file.getvalue()
+    except Exception:
+        try:
+            data = uploaded_file.getbuffer()
+        except Exception:
+            data = uploaded_file.read()
+    dest.write_bytes(bytes(data))
+
+    return str(dest.resolve())
+
+def _download_btn_if_exists(label: str, path_str: str) -> None:
+    """Mostra botão de download se o arquivo existir."""
+    if not path_str:
+        return
+    p = Path(path_str)
+    if p.exists() and p.is_file():
+        try:
+            data = p.read_bytes()
+        except Exception:
+            return
+        st.download_button(label=label, data=data, file_name=p.name, mime="application/octet-stream")
 
 # ================= PDF (padrão exato do seu anexo) =================
 from reportlab.lib.pagesizes import A4, landscape
@@ -894,45 +1200,88 @@ def page_obras():
     st.markdown('<div class="card"><h3>Cadastro de Obras</h3></div>', unsafe_allow_html=True)
     c1, c2 = st.columns([1, 2])
 
+    # ========= COLUNA ESQUERDA: NOVA OBRA =========
     with c1:
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown("#### Nova Obra")
+
         with SessionLocal() as sess:
-            clientes = sess.execute(select(Cliente).where(Cliente.ativo == 1).order_by(Cliente.nome.asc())).scalars().all()
+            clientes = (
+                sess.execute(
+                    select(Cliente).where(Cliente.ativo == 1).order_by(Cliente.nome.asc())
+                )
+                .scalars()
+                .all()
+            )
+
         nome = st.text_input("Nome da Obra *", key="obra_new_nome")
         endereco = st.text_input("Endereço *", key="obra_new_end")
         cliente_opt = ["(Sem cliente)"] + [c.nome for c in clientes]
         cliente_sel_nome = st.selectbox("Cliente", cliente_opt, key="obra_new_cli")
+
         if st.button("➕ Cadastrar Obra", use_container_width=True):
-            if not nome or not endereco:
+            if not nome.strip() or not endereco.strip():
                 st.error("Preencha Nome e Endereço.")
             else:
                 with SessionLocal() as sess:
                     cid = None
                     if cliente_sel_nome != "(Sem cliente)":
-                        cobj = sess.execute(select(Cliente).where(Cliente.nome == cliente_sel_nome)).scalars().first()
+                        cobj = (
+                            sess.execute(select(Cliente).where(Cliente.nome == cliente_sel_nome))
+                            .scalars()
+                            .first()
+                        )
                         cid = cobj.id if cobj else None
-                    sess.add(Obra(nome=nome.strip(), endereco=endereco.strip(), cliente_id=cid, ativo=1))
-                    sess.commit(); st.success("Obra cadastrada."); st.rerun()
-        st.markdown('</div>', unsafe_allow_html=True)
+                    sess.add(
+                        Obra(
+                            nome=nome.strip(),
+                            endereco=endereco.strip(),
+                            cliente_id=cid,
+                            ativo=1,
+                        )
+                    )
+                    sess.commit()
+                st.success("Obra cadastrada.")
+                st.rerun()
 
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    # ========= COLUNA DIREITA: LISTA / EDIÇÃO =========
     with c2:
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown("#### Obras")
 
         with SessionLocal() as sess:
-            obras = sess.execute(
-                select(Obra).options(selectinload(Obra.cliente_ref)).order_by(Obra.nome.asc())
-            ).scalars().all()
+            obras = (
+                sess.execute(
+                    select(Obra)
+                    .options(selectinload(Obra.cliente_ref))
+                    .order_by(Obra.nome.asc())
+                )
+                .scalars()
+                .all()
+            )
 
         if not obras:
-            st.info("Nenhuma obra cadastrada."); st.markdown('</div>', unsafe_allow_html=True); return
+            st.info("Nenhuma obra cadastrada.")
+            st.markdown("</div>", unsafe_allow_html=True)
+            return
 
-        df = pd.DataFrame([{
-            "id": o.id, "nome": o.nome, "endereco": o.endereco,
-            "cliente": (o.cliente_ref.nome if getattr(o, "cliente_ref", None) else None),
-            "ativo": o.ativo, "bloqueada": o.bloqueada, "motivo": o.bloqueada_motivo, "desde": o.bloqueada_desde
-        } for o in obras])
+        df = pd.DataFrame(
+            [
+                {
+                    "id": o.id,
+                    "nome": o.nome,
+                    "endereco": o.endereco,
+                    "cliente": (o.cliente_ref.nome if getattr(o, "cliente_ref", None) else None),
+                    "ativo": o.ativo,
+                    "bloqueada": o.bloqueada,
+                    "motivo": o.bloqueada_motivo,
+                    "desde": o.bloqueada_desde,
+                }
+                for o in obras
+            ]
+        )
         st.dataframe(df, use_container_width=True, hide_index=True)
 
         st.markdown("##### Editar / Excluir")
@@ -940,53 +1289,172 @@ def page_obras():
             "Selecione uma obra",
             options=obras,
             format_func=lambda o: f"{o.nome} — {o.endereco} (ID {o.id})",
-            key="obra_edit_sel"
+            key="obra_edit_sel",
         )
 
         if obra_sel:
+            # Abrimos UMA sessão para toda a edição/salvamento
             with SessionLocal() as sess:
                 o = sess.get(Obra, obra_sel.id)
-                clientes = sess.execute(select(Cliente).order_by(Cliente.nome.asc())).scalars().all()
+                clientes = (
+                    sess.execute(select(Cliente).order_by(Cliente.nome.asc()))
+                    .scalars()
+                    .all()
+                )
 
+                # ---- Campos básicos
                 e1, e2 = st.columns(2)
                 with e1:
                     o.nome = st.text_input("Nome", value=o.nome or "", key=f"obra_edit_nome_{o.id}")
-                    o.endereco = st.text_input("Endereço", value=o.endereco or "", key=f"obra_edit_end_{o.id}")
+                    o.endereco = st.text_input(
+                        "Endereço", value=o.endereco or "", key=f"obra_edit_end_{o.id}"
+                    )
                 with e2:
                     cli_opts = ["(Sem cliente)"] + [c.nome for c in clientes]
                     cli_current = o.cliente_ref.nome if o.cliente_ref else "(Sem cliente)"
-                    cli_new_nome = st.selectbox("Cliente", cli_opts, index=cli_opts.index(cli_current), key=f"obra_edit_cli_{o.id}")
+                    cli_new_nome = st.selectbox(
+                        "Cliente",
+                        cli_opts,
+                        index=cli_opts.index(cli_current),
+                        key=f"obra_edit_cli_{o.id}",
+                    )
                     o.ativo = 1 if st.checkbox("Ativo", value=bool(o.ativo), key=f"obra_edit_ativo_{o.id}") else 0
-                    if cli_new_nome == "(Sem cliente)": o.cliente_id = None
+                    if cli_new_nome == "(Sem cliente)":
+                        o.cliente_id = None
                     else:
-                        novo_cli = sess.execute(select(Cliente).where(Cliente.nome == cli_new_nome)).scalars().first()
+                        novo_cli = (
+                            sess.execute(select(Cliente).where(Cliente.nome == cli_new_nome))
+                            .scalars()
+                            .first()
+                        )
                         o.cliente_id = novo_cli.id if novo_cli else None
 
+                # ---- Bloqueio da obra
                 st.markdown("##### Bloqueio da obra")
                 ob_b1, ob_b2 = st.columns([1, 2])
                 bloqueada_atual = bool(o.bloqueada)
-                nova_bloq = ob_b1.checkbox("Obra bloqueada", value=bloqueada_atual, key=f"obra_edit_bloq_{o.id}")
-                novo_motivo_obra = ob_b2.text_input("Motivo (opcional)", value=o.bloqueada_motivo or "", key=f"obra_edit_bloqmot_{o.id}")
+                nova_bloq = ob_b1.checkbox(
+                    "Obra bloqueada",
+                    value=bloqueada_atual,
+                    key=f"obra_edit_bloq_{o.id}",
+                )
+                novo_motivo_obra = ob_b2.text_input(
+                    "Motivo (opcional)",
+                    value=o.bloqueada_motivo or "",
+                    key=f"obra_edit_bloqmot_{o.id}",
+                )
 
+                # ---- Anexos
+                st.markdown("##### Anexos da obra")
+                ac1, ac2, ac3 = st.columns(3)
+                up_cnpj = ac1.file_uploader(
+                    "Cartão CNPJ (PDF/JPG/PNG)",
+                    type=["pdf", "jpg", "jpeg", "png"],
+                    key=f"up_cnpj_{o.id}",
+                )
+                up_proposta = ac2.file_uploader(
+                    "Proposta (PDF/JPG/PNG)",
+                    type=["pdf", "jpg", "jpeg", "png"],
+                    key=f"up_prop_{o.id}",
+                )
+                up_contrato = ac3.file_uploader(
+                    "Contrato (PDF/JPG/PNG)",
+                    type=["pdf", "jpg", "jpeg", "png"],
+                    key=f"up_cont_{o.id}",
+                )
+
+                # Botões de download se já houver arquivo
+                dc1, dc2, dc3 = st.columns(3)
+                with dc1:
+                    _download_btn_if_exists("⬇️ Baixar CNPJ", o.anexo_cnpj)
+                with dc2:
+                    _download_btn_if_exists("⬇️ Baixar Proposta", o.anexo_proposta)
+                with dc3:
+                    _download_btn_if_exists("⬇️ Baixar Contrato", o.anexo_contrato)
+
+                # ---- Visualizar anexos (status)
+                st.markdown("##### Visualizar anexos")
+
+                def _abs_ok(path_str: str | None) -> tuple[bool, str]:
+                    if not path_str:
+                        return (False, "")
+                    p = Path(path_str)
+                    if not p.is_absolute():
+                        p = BASE_DIR / p
+                    return (p.exists() and p.is_file(), p.name)
+
+                ok_cnpj, nm_cnpj = _abs_ok(o.anexo_cnpj)
+                ok_prop, nm_prop = _abs_ok(o.anexo_proposta)
+                ok_cont, nm_cont = _abs_ok(o.anexo_contrato)
+
+                st.info(f"Cartão CNPJ: {'OK — ' + nm_cnpj if ok_cnpj else 'não anexado.'}")
+                st.info(f"Proposta: {'OK — ' + nm_prop if ok_prop else 'não anexada.'}")
+                st.info(f"Contrato: {'OK — ' + nm_cont if ok_cont else 'não anexado.'}")
+
+                # ---- Botões Salvar / Excluir
                 b1, b2 = st.columns([1, 1])
-                if b1.button("💾 Salvar alterações", use_container_width=True, key=f"obra_save_{o.id}"):
-                    if nova_bloq and not bloqueada_atual:
-                        o.bloqueada = 1; o.bloqueada_desde = date.today(); o.bloqueada_motivo = (novo_motivo_obra or "Obra bloqueada")
-                    elif not nova_bloq and bloqueada_atual:
-                        o.bloqueada = 0; o.bloqueada_desde = None; o.bloqueada_motivo = None
-                    else:
-                        o.bloqueada_motivo = (novo_motivo_obra or None)
-                    sess.commit(); st.success("Obra atualizada."); st.rerun()
 
-                with SessionLocal() as sess2:
-                    os_count = sess2.query(OS).filter(OS.obra_id == o.id).count()
+                if b1.button(
+                    "💾 Salvar alterações",
+                    use_container_width=True,
+                    key=f"obra_save_{o.id}",
+                ):
+                    # bloqueio
+                    if nova_bloq and not bloqueada_atual:
+                        o.bloqueada = 1
+                        o.bloqueada_desde = date.today()
+                        o.bloqueada_motivo = novo_motivo_obra or "Obra bloqueada"
+                    elif not nova_bloq and bloqueada_atual:
+                        o.bloqueada = 0
+                        o.bloqueada_desde = None
+                        o.bloqueada_motivo = None
+                    else:
+                        o.bloqueada_motivo = novo_motivo_obra or None
+
+                    # anexos
+                    try:
+                        if up_cnpj is not None:
+                            p_rel = _save_anexo(up_cnpj, o.id, "cnpj")
+                            if p_rel:
+                                o.anexo_cnpj = p_rel
+                                st.toast(f"CNPJ salvo: {p_rel}", icon="✅")
+                        if up_proposta is not None:
+                            p_rel = _save_anexo(up_proposta, o.id, "proposta")
+                            if p_rel:
+                                o.anexo_proposta = p_rel
+                                st.toast(f"Proposta salva: {p_rel}", icon="✅")
+                        if up_contrato is not None:
+                            p_rel = _save_anexo(up_contrato, o.id, "contrato")
+                            if p_rel:
+                                o.anexo_contrato = p_rel
+                                st.toast(f"Contrato salvo: {p_rel}", icon="✅")
+                    except Exception as e:
+                        st.error(f"Falha ao salvar anexos: {e}")
+
+                    sess.commit()
+                    st.success("Obra atualizada.")
+                    st.rerun()
+
+                # Excluir
+                os_count = sess.query(OS).filter(OS.obra_id == o.id).count()
                 if os_count > 0:
                     st.warning(f"Ao excluir esta obra, {os_count} OS serão removidas.")
-                conf = st.checkbox("Confirmo a exclusão desta obra (e suas OS)", key=f"obra_del_conf_{o.id}")
-                if b2.button("🗑️ Excluir obra", use_container_width=True, disabled=not conf):
-                    sess.delete(o); sess.commit(); st.success("Obra excluída."); st.rerun()
+                conf = st.checkbox(
+                    "Confirmo a exclusão desta obra (e suas OS)",
+                    key=f"obra_del_conf_{o.id}",
+                )
+                if b2.button(
+                    "🗑️ Excluir obra",
+                    use_container_width=True,
+                    disabled=not conf,
+                    key=f"obra_del_{o.id}",
+                ):
+                    sess.delete(o)
+                    sess.commit()
+                    st.success("Obra excluída.")
+                    st.rerun()
 
-        st.markdown('</div>', unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
 
 def page_servicos():
     c1, c2 = st.columns([1, 2])
@@ -1104,6 +1572,36 @@ def page_emitir_os():
 
     idx_escolhido = st.selectbox("Obra *", list(range(len(opt_pairs))), format_func=lambda i: opt_pairs[i][1])
     obra_sel, _lbl, cliente_bloqueado, obra_bloqueada = opt_pairs[idx_escolhido]
+        # === Documentos obrigatórios da obra (CNPJ / Proposta / Contrato) ===
+    # Lemos do banco para garantir que está atualizado mesmo se a outra aba salvou agora.
+    with SessionLocal() as _s_docs:
+        _obra_docs = _s_docs.get(Obra, obra_sel.id)
+
+    docs_ok = {
+        "Cartão CNPJ": bool(getattr(_obra_docs, "anexo_cnpj", None)),
+        "Proposta":    bool(getattr(_obra_docs, "anexo_proposta", None)),
+        "Contrato":    bool(getattr(_obra_docs, "anexo_contrato", None)),
+    }
+    faltando = [nome for nome, ok in docs_ok.items() if not ok]
+
+    if faltando:
+        st.markdown(
+            f'<div class="metric-container" style="border-color:#FF7A00">'
+            f'<b>Documentos pendentes</b>'
+            f'<div style="margin-top:4px">Falta anexar: <b>{", ".join(faltando)}</b>. '
+            f'Cadastre em <i>Cadastro: Obras → Anexos da obra</i>.</div>'
+            f'</div>',
+            unsafe_allow_html=True
+        )
+    else:
+        st.markdown(
+            '<div class="metric-container">'
+            '<b>Obra regular</b>'
+            '<div style="margin-top:4px">Todos os documentos obrigatórios estão anexados.</div>'
+            '</div>',
+            unsafe_allow_html=True
+        )
+    # === fim checagem de documentos ===
 
     # ==== CAMPO/STATUS DE MEDIÇÃO (em dia / em atraso) ====
     # Regras:
