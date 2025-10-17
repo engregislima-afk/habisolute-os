@@ -2203,6 +2203,15 @@ def page_export():
 
 # ===================== MENU / ROUTER =====================
 st.sidebar.markdown("### 🧭 Navegação")
+st.sidebar.markdown(
+    """
+<div class="hb-side-title">
+  <span class="hb-dot"></span>
+  <span>Navegação</span>
+</div>
+""",
+    unsafe_allow_html=True,
+)
 MENU = [
     "Emitir OS",
     "Cadastro: Clientes",
