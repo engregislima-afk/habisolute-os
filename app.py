@@ -28,9 +28,6 @@ try:
     from reportlab.platypus import KeepTogether
 except Exception:
     from reportlab.platypus.flowables import KeepTogether
-    
-import requests
-import unicodedata
 
 # =============================================================================
 # Identidade / Config
@@ -1005,79 +1002,6 @@ def _abs_ok(path_str: str | None) -> tuple[bool, str]:
     p = Path(path_str)
     if not p.is_absolute(): p = BASE_DIR / p
     return (p.exists() and p.is_file(), p.name)
-    def _only_digits(s: str) -> str:
-    return "".join(ch for ch in str(s) if ch.isdigit())
-
-def _norm_txt(s: str | None) -> str:
-    if not s:
-        return ""
-    s = unicodedata.normalize("NFKC", str(s)).strip()
-    return s
-
-def fetch_cnpj_brasilapi(cnpj: str) -> dict | None:
-    """Tenta obter dados via BrasilAPI (sem chave)."""
-    url = f"https://brasilapi.com.br/api/cnpj/v1/{_only_digits(cnpj)}"
-    try:
-        r = requests.get(url, timeout=8)
-        if r.status_code == 200:
-            return r.json()
-    except Exception:
-        pass
-    return None
-
-def fetch_cnpj_apibrasil(cnpj: str, token: str) -> dict | None:
-    """
-    Fallback: API Brasil (apibrasil.com). Ajuste o endpoint se o seu for diferente.
-    """
-    try:
-        url = f"https://api.apibrasil.com.br/cnpj/v1/{_only_digits(cnpj)}"
-        headers = {"Authorization": f"Bearer {token}"}
-        r = requests.get(url, headers=headers, timeout=10)
-        if r.status_code == 200:
-            return r.json()
-    except Exception:
-        pass
-    return None
-
-def lookup_cnpj(cnpj: str) -> dict | None:
-    """
-    Retorna: {"nome","email","telefone","contato"} ou None.
-    1) Tenta BrasilAPI; 2) se falhar e houver token, tenta API Brasil.
-    """
-    cnpj = _only_digits(cnpj)
-    if len(cnpj) != 14:
-        return None
-
-    # 1) BrasilAPI
-    j = fetch_cnpj_brasilapi(cnpj)
-    if j:
-        nome = _norm_txt(j.get("razao_social") or j.get("nome_fantasia"))
-        email = _norm_txt(j.get("email"))
-        tel = ""
-        if j.get("ddd_telefone_1"):
-            tel = _norm_txt(j["ddd_telefone_1"])
-        elif j.get("ddd_telefone_2"):
-            tel = _norm_txt(j["ddd_telefone_2"])
-        contato = _norm_txt(j.get("socio_administrador"))
-        return {"nome": nome, "email": email, "telefone": tel, "contato": contato}
-
-    # 2) API Brasil (se tiver token)
-    token = ""
-    try:
-        token = st.secrets.get("APIBRASIL_TOKEN", "")
-    except Exception:
-        token = ""
-    if token:
-        j = fetch_cnpj_apibrasil(cnpj, token)
-        if j:
-            core = j.get("data") or j
-            nome = _norm_txt(core.get("razao_social") or core.get("nome_fantasia"))
-            email = _norm_txt(core.get("email"))
-            tel = _norm_txt(core.get("telefone") or core.get("telefone1") or core.get("ddd_telefone_1"))
-            contato = _norm_txt(core.get("responsavel") or core.get("socio_administrador"))
-            return {"nome": nome, "email": email, "telefone": tel, "contato": contato}
-
-    return None
 
 # =============================================================================
 # PDFs (OS, Medição, Fechamento)
@@ -1399,70 +1323,97 @@ def gerar_pdf_fechamento(cliente_nome: str, periodo_str: str, linhas: list[dict]
     return buf.getvalue()
 # ===================== PÁGINAS: Cadastros =====================
 @require_perm("relatorios_export")
-with col_new:
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown("#### Novo Cliente")
+def page_clientes():
+    st.markdown('<div class="section-title">Cadastro de Clientes</div>', unsafe_allow_html=True)
+    col_new, col_list = st.columns([1, 2])
 
-    # Linha 1: CNPJ + botão buscar
-    cnpj_col, btn_col = st.columns([3, 1])
-    with cnpj_col:
+    with col_new:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.markdown("#### Novo Cliente")
+        nome = st.text_input("Nome do Cliente *", key="cli_new_nome")
         documento = st.text_input("Documento (CNPJ/CPF) — opcional", key="cli_new_doc")
-    with btn_col:
-        st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
-        if st.button("Buscar CNPJ", use_container_width=True):
-            info = lookup_cnpj(documento)
-            if info:
-                # Preenche campos do form
-                if info.get("nome"):
-                    st.session_state["cli_new_nome"] = info["nome"]
-                if info.get("email"):
-                    st.session_state["cli_new_email"] = info["email"]
-                if info.get("telefone"):
-                    st.session_state["cli_new_tel"] = info["telefone"]
-                if info.get("contato"):
-                    st.session_state["cli_new_contato"] = info["contato"]
+        contato = st.text_input("Contato — opcional", key="cli_new_contato")
+        email = st.text_input("E-mail — opcional", key="cli_new_email")
+        telefone = st.text_input("Telefone — opcional", key="cli_new_tel")
+        ativo = st.checkbox("Ativo", value=True, key="cli_new_ativo")
 
-                # banner de sucesso
-                st.markdown(
-                    "<div class='hb-banner success'><span class='title'>CNPJ encontrado.</span>"
-                    "<span>Campos preenchidos automaticamente. Confira antes de salvar.</span></div>",
-                    unsafe_allow_html=True,
-                )
+        if st.button("Cadastrar Cliente", use_container_width=True, key="btn_cli_add"):
+            if not nome.strip():
+                banner("error", "Informe o nome do cliente.")
             else:
-                st.markdown(
-                    "<div class='hb-banner warn'><span class='title'>Não encontrado</span>"
-                    "<span>Verifique o CNPJ (somente números) ou tente novamente.</span></div>",
-                    unsafe_allow_html=True,
-                )
+                with SessionLocal() as sess:
+                    ja = sess.execute(select(Cliente).where(Cliente.nome == nome.strip())).scalars().first()
+                    if ja:
+                        banner("warn", "Já existe cliente com esse nome.")
+                    else:
+                        sess.add(Cliente(
+                            nome=nome.strip(), documento=(documento or None),
+                            contato=(contato or None), email=(email or None),
+                            telefone=(telefone or None), ativo=1 if ativo else 0
+                        ))
+                        sess.commit()
+                        flash("success", "Cliente cadastrado.")
+                        _rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
 
-    # Demais campos (usam o session_state possivelmente preenchido)
-    nome = st.text_input("Nome do Cliente *", key="cli_new_nome")
-    contato = st.text_input("Contato — opcional", key="cli_new_contato")
-    email = st.text_input("E-mail — opcional", key="cli_new_email")
-    telefone = st.text_input("Telefone — opcional", key="cli_new_tel")
-    ativo = st.checkbox("Ativo", value=True, key="cli_new_ativo")
+    with col_list:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.markdown("#### Clientes")
+        with SessionLocal() as sess:
+            clientes = sess.execute(select(Cliente).order_by(Cliente.nome.asc())).scalars().all()
 
-    if st.button("Cadastrar Cliente", use_container_width=True):
-        if not (nome or "").strip():
-            st.error("Informe o nome do cliente.")
-        else:
+        if not clientes:
+            banner("info", "Nenhum cliente ainda.")
+            st.markdown('</div>', unsafe_allow_html=True)
+            return
+
+        df = pd.DataFrame([{
+            "id": c.id, "nome": c.nome, "documento": c.documento, "contato": c.contato,
+            "email": c.email, "telefone": c.telefone, "ativo": c.ativo,
+            "bloqueado": c.bloqueado, "motivo": c.bloqueado_motivo, "desde": c.bloqueado_desde
+        } for c in clientes])
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+        st.markdown("##### Editar / Excluir")
+        cli_sel = st.selectbox(
+            "Selecione um cliente",
+            options=clientes,
+            format_func=lambda c: f"{c.nome} (ID {c.id})",
+            key="cli_edit_sel"
+        )
+        if cli_sel:
             with SessionLocal() as sess:
-                ja = sess.execute(select(Cliente).where(Cliente.nome == nome.strip())).scalars().first()
-                if ja:
-                    st.error("Já existe cliente com esse nome.")
-                else:
-                    sess.add(Cliente(
-                        nome=nome.strip(),
-                        documento=(_only_digits(documento) or None),
-                        contato=(contato or None),
-                        email=(email or None),
-                        telefone=(telefone or None),
-                        ativo=1 if ativo else 0
-                    ))
-                    sess.commit()
-                    st.success("Cliente cadastrado.")
-                    st.rerun()
-    st.markdown('</div>', unsafe_allow_html=True)
+                c = sess.get(Cliente, cli_sel.id)
+
+                e1, e2 = st.columns(2)
+                with e1:
+                    c.nome = st.text_input("Nome", value=c.nome or "", key=f"cli_edit_nome_{c.id}")
+                    c.documento = st.text_input("Documento", value=c.documento or "", key=f"cli_edit_doc_{c.id}")
+                    c.contato = st.text_input("Contato", value=c.contato or "", key=f"cli_edit_ctt_{c.id}")
+                with e2:
+                    c.email = st.text_input("E-mail", value=c.email or "", key=f"cli_edit_email_{c.id}")
+                    c.telefone = st.text_input("Telefone", value=c.telefone or "", key=f"cli_edit_tel_{c.id}")
+                    c.ativo = 1 if st.checkbox("Ativo", value=bool(c.ativo), key=f"cli_edit_ativo_{c.id}") else 0
+
+                st.markdown("##### Bloqueio do cliente")
+                col_b1, col_b2 = st.columns([1, 2])
+                bloqueado_atual = bool(c.bloqueado)
+                novo_bloq = col_b1.checkbox("Cliente bloqueado", value=bloqueado_atual, key=f"cli_edit_bloq_{c.id}")
+                novo_motivo = col_b2.text_input("Motivo (opcional)", value=c.bloqueado_motivo or "", key=f"cli_edit_bloqmot_{c.id}")
+
+                bcol1, bcol2 = st.columns([1, 1])
+                if bcol1.button("Salvar alterações", use_container_width=True, key=f"cli_save_{c.id}"):
+                    dup = sess.execute(select(Cliente).where(Cliente.nome == c.nome, Cliente.id != c.id)).scalars().first()
+                    if dup:
+                        banner("error", "Já existe outro cliente com esse nome.")
+                    else:
+                        if novo_bloq and not bloqueado_atual:
+                            c.bloqueado = 1; c.bloqueado_desde = date.today(); c.bloqueado_motivo = (novo_motivo or "Bloqueado")
+                        elif not novo_bloq and bloqueado_atual:
+                            c.bloqueado = 0; c.bloqueado_desde = None; c.bloqueado_motivo = None
+                        else:
+                            c.bloqueado_motivo = (novo_motivo or None)
+                        sess.commit(); flash("success", "Cliente atualizado."); _rerun()
 
                 with SessionLocal() as s2:
                     obras_vinc = s2.query(Obra).filter(
