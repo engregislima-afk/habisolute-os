@@ -10,9 +10,6 @@ from typing import Optional, Tuple, List, Dict, Any
 import streamlit as st
 import pandas as pd
 
-import requests
-import unicodedata
-
 # SQLAlchemy
 from sqlalchemy import (
     create_engine, Column, Integer, String, Float, Date, ForeignKey, Text,
@@ -31,6 +28,9 @@ try:
     from reportlab.platypus import KeepTogether
 except Exception:
     from reportlab.platypus.flowables import KeepTogether
+    
+import requests
+import unicodedata
 
 # =============================================================================
 # Identidade / Config
@@ -1009,7 +1009,8 @@ def _abs_ok(path_str: str | None) -> tuple[bool, str]:
     return "".join(ch for ch in str(s) if ch.isdigit())
 
 def _norm_txt(s: str | None) -> str:
-    if not s: return ""
+    if not s:
+        return ""
     s = unicodedata.normalize("NFKC", str(s)).strip()
     return s
 
@@ -1026,8 +1027,7 @@ def fetch_cnpj_brasilapi(cnpj: str) -> dict | None:
 
 def fetch_cnpj_apibrasil(cnpj: str, token: str) -> dict | None:
     """
-    Fallback: API Brasil (apibrasil.com). Ajuste o endpoint se seu plano usar outro.
-    Documentação costuma usar header Authorization: Bearer <token>.
+    Fallback: API Brasil (apibrasil.com). Ajuste o endpoint se o seu for diferente.
     """
     try:
         url = f"https://api.apibrasil.com.br/cnpj/v1/{_only_digits(cnpj)}"
@@ -1041,8 +1041,8 @@ def fetch_cnpj_apibrasil(cnpj: str, token: str) -> dict | None:
 
 def lookup_cnpj(cnpj: str) -> dict | None:
     """
-    Retorna um dicionário normalizado com campos:
-    {nome, email, telefone, contato}
+    Retorna: {"nome","email","telefone","contato"} ou None.
+    1) Tenta BrasilAPI; 2) se falhar e houver token, tenta API Brasil.
     """
     cnpj = _only_digits(cnpj)
     if len(cnpj) != 14:
@@ -1051,7 +1051,6 @@ def lookup_cnpj(cnpj: str) -> dict | None:
     # 1) BrasilAPI
     j = fetch_cnpj_brasilapi(cnpj)
     if j:
-        # BrasilAPI campos: razao_social, nome_fantasia, email, ddd_telefone_1 etc.
         nome = _norm_txt(j.get("razao_social") or j.get("nome_fantasia"))
         email = _norm_txt(j.get("email"))
         tel = ""
@@ -1059,16 +1058,19 @@ def lookup_cnpj(cnpj: str) -> dict | None:
             tel = _norm_txt(j["ddd_telefone_1"])
         elif j.get("ddd_telefone_2"):
             tel = _norm_txt(j["ddd_telefone_2"])
-        contato = _norm_txt(j.get("socio_administrador"))  # pode não existir
+        contato = _norm_txt(j.get("socio_administrador"))
         return {"nome": nome, "email": email, "telefone": tel, "contato": contato}
 
-    # 2) API Brasil (se houver token nas secrets)
-    token = st.secrets.get("APIBRASIL_TOKEN", "")
+    # 2) API Brasil (se tiver token)
+    token = ""
+    try:
+        token = st.secrets.get("APIBRASIL_TOKEN", "")
+    except Exception:
+        token = ""
     if token:
         j = fetch_cnpj_apibrasil(cnpj, token)
         if j:
-            # Estrutura pode variar conforme plano; tentar mapear campos comuns
-            core = j.get("data") or j  # alguns retornam dentro de "data"
+            core = j.get("data") or j
             nome = _norm_txt(core.get("razao_social") or core.get("nome_fantasia"))
             email = _norm_txt(core.get("email"))
             tel = _norm_txt(core.get("telefone") or core.get("telefone1") or core.get("ddd_telefone_1"))
