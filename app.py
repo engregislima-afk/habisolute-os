@@ -6,6 +6,8 @@ import io, re, os, json, base64, tempfile, zipfile, hashlib, hmac, secrets, cale
 from datetime import date, datetime
 from pathlib import Path
 from typing import Optional, Tuple, List, Dict, Any
+import requests  # <--- NOVO
+
 
 import streamlit as st
 import pandas as pd
@@ -1064,6 +1066,77 @@ def _abs_ok(path_str: str | None) -> tuple[bool, str]:
     p = Path(path_str)
     if not p.is_absolute(): p = BASE_DIR / p
     return (p.exists() and p.is_file(), p.name)
+    def _get_secret(name: str, default: str = "") -> str:
+    try:
+        return st.secrets.get(name, default)  # type: ignore
+    except Exception:
+        return os.environ.get(name, default)
+
+def _clean_cnpj(cnpj: str) -> str:
+    return re.sub(r"\D+", "", str(cnpj or ""))
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def fetch_cnpj_apibrasil(cnpj: str) -> dict | None:
+    """
+    Consulta CNPJ na APIBrasil e retorna um dicionário normalizado.
+    Retorna None em caso de erro ou CNPJ inválido.
+    """
+    cnpj_num = _clean_cnpj(cnpj)
+    if len(cnpj_num) != 14:
+        return None
+
+    base_url = _get_secret("APIBRASIL_BASE_URL", "https://api.apibrasil.com.br").rstrip("/")
+    path     = _get_secret("APIBRASIL_CNPJ_PATH", "/v2/cnpj").strip("/")
+    token    = _get_secret("APIBRASIL_TOKEN", "").strip()
+    if not token:
+        # Sem token configurado
+        return None
+
+    url = f"{base_url}/{path}/{cnpj_num}"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+        "User-Agent": f"{SYSTEM_CODE}/1.0"
+    }
+
+    try:
+        r = requests.get(url, headers=headers, timeout=15)
+        if r.status_code != 200:
+            return None
+        data = r.json() if r.headers.get("content-type","").startswith("application/json") else None
+        if not isinstance(data, dict):
+            return None
+
+        # ---- Normalização (mapeie conforme seu provedor/planos) ----
+        # Exemplos comuns em provedores de CNPJ:
+        #   nome, razao_social, fantasia, logradouro, numero, complemento, bairro, municipio, uf, cep,
+        #   telefone, email, atividade_principal, situacao
+        nome = data.get("razao_social") or data.get("nome") or data.get("razaoSocial")
+        fantasia = data.get("nome_fantasia") or data.get("fantasia") or data.get("nomeFantasia")
+        end_logr = data.get("logradouro") or data.get("endereco", {}).get("logradouro")
+        end_num  = data.get("numero") or data.get("endereco", {}).get("numero")
+        end_comp = data.get("complemento") or data.get("endereco", {}).get("complemento")
+        bairro   = data.get("bairro") or data.get("endereco", {}).get("bairro")
+        cidade   = data.get("municipio") or data.get("cidade") or data.get("endereco", {}).get("municipio")
+        uf       = data.get("uf") or data.get("estado") or data.get("endereco", {}).get("uf")
+        cep      = data.get("cep") or data.get("endereco", {}).get("cep")
+        telefone = data.get("telefone") or data.get("telefone1") or data.get("contato", {}).get("telefone")
+        email    = data.get("email") or data.get("contato", {}).get("email")
+
+        endereco_fmt = " ".join(
+            [str(x) for x in [end_logr, end_num, end_comp, "-", bairro, "-", cidade, "/", uf, "-", cep] if x]
+        ).replace(" - - ", " - ").replace(" / -", " / ").strip(" -/")
+
+        return {
+            "razao": (nome or "").strip(),
+            "fantasia": (fantasia or "").strip(),
+            "endereco": endereco_fmt.strip(),
+            "telefone": (telefone or "").strip(),
+            "email": (email or "").strip(),
+            "cnpj": cnpj_num,
+        }
+    except Exception:
+        return None
 
 # =============================================================================
 # PDFs (OS, Medição, Fechamento)
@@ -1399,6 +1472,27 @@ def page_clientes():
         email = st.text_input("E-mail — opcional", key="cli_new_email")
         telefone = st.text_input("Telefone — opcional", key="cli_new_tel")
         ativo = st.checkbox("Ativo", value=True, key="cli_new_ativo")
+        # Botão: buscar dados por CNPJ
+if st.button("🔎 Buscar CNPJ (APIBrasil)", use_container_width=True, key="cli_new_busca_cnpj"):
+    if not (documento or "").strip():
+        banner("warn", "Informe o CNPJ para buscar.")
+    else:
+        info = fetch_cnpj_apibrasil(documento)
+        if not info:
+            banner("error", "Não foi possível obter dados deste CNPJ (verifique token, plano e o número informado).")
+        else:
+            # Preenche os campos se estiverem vazios
+            if not nome.strip():
+                st.session_state["cli_new_nome"] = info["razao"] or info["fantasia"] or ""
+            if not email.strip():
+                st.session_state["cli_new_email"] = info["email"] or ""
+            if not telefone.strip():
+                st.session_state["cli_new_tel"] = info["telefone"] or ""
+            # Endereço não existe no Cliente; você decide onde guardar.
+            # Se quiser, pode abrir um text_input extra:
+            if "cli_new_end_aux" not in st.session_state:
+                st.session_state["cli_new_end_aux"] = info["endereco"]
+            banner("success", "Dados carregados pelo CNPJ.")
 
         if st.button("Cadastrar Cliente", use_container_width=True, key="btn_cli_add"):
             if not nome.strip():
