@@ -1066,7 +1066,7 @@ def _abs_ok(path_str: str | None) -> tuple[bool, str]:
     p = Path(path_str)
     if not p.is_absolute(): p = BASE_DIR / p
     return (p.exists() and p.is_file(), p.name)
-    def _get_secret(name: str, default: str = "") -> str:
+def _get_secret(name: str, default: str = "") -> str:
     try:
         return st.secrets.get(name, default)  # type: ignore
     except Exception:
