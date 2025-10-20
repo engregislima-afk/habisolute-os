@@ -363,10 +363,11 @@ html, body, [data-testid="stAppViewContainer"] {{
   margin-right: .1rem;
 }}
 
-.card{ 
+.card{{ 
   background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
   border:1px solid var(--hb-border); border-radius:18px; padding:16px; margin-bottom:14px;
   box-shadow: 0 6px 28px rgba(0,0,0,.25), inset 0 1px 0 rgba(255,255,255,.03);
+}}
 }}
 .section-title {{
   background: linear-gradient(90deg, var(--hb-accent), var(--hb-accent2));
