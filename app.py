@@ -1473,7 +1473,7 @@ def page_clientes():
         telefone = st.text_input("Telefone — opcional", key="cli_new_tel")
         ativo = st.checkbox("Ativo", value=True, key="cli_new_ativo")
         # Botão: buscar dados por CNPJ
-    def cnpj_is_valid(cnpj: str) -> bool:
+def cnpj_is_valid(cnpj: str) -> bool:
     c = _clean_cnpj(cnpj)
     if len(c) != 14 or len(set(c)) == 1:
         return False
