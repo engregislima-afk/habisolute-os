@@ -278,24 +278,44 @@ def require_perm(perm: str):
 # =============================================================================
 # CSS — Windows 11 / Fluent (com acentos laranja)
 # =============================================================================
-def _inject_css():
+def _inject_css(theme: str | None = None):
+    mode = (theme or st.session_state.get("theme_mode") or "Claro").strip().lower()
+
+    if mode == "claro":
+        # Paleta Clara
+        HB_BG      = "#f7f8fb"
+        HB_CARD    = "#ffffff"
+        HB_BORDER  = "#e6e9f2"
+        HB_TEXT    = "#0f1116"
+        HB_MUTED   = "#475069"
+        HB_GLASS   = "rgba(0,0,0,.04)"
+    else:
+        # Paleta Escura (padrão anterior)
+        HB_BG      = "#0f1116"
+        HB_CARD    = "#141821"
+        HB_BORDER  = "#2a3142"
+        HB_TEXT    = "#f5f7fb"
+        HB_MUTED   = "#c9d2e4"
+        HB_GLASS   = "rgba(255,255,255,.06)"
+
     st.markdown(f"""
 <style>
 :root {{
-  --hb-bg: #0f1116;
-  --hb-card: #141821;
-  --hb-border: #2a3142;
-  --hb-text: #f5f7fb;
-  --hb-muted: #c9d2e4;
+  --hb-bg: {HB_BG};
+  --hb-card: {HB_CARD};
+  --hb-border: {HB_BORDER};
+  --hb-text: {HB_TEXT};
+  --hb-muted: {HB_MUTED};
   --hb-accent: {BRAND_COLOR};
   --hb-accent2: #ffb267;
-  --hb-glass: rgba(255,255,255,.06);
+  --hb-glass: {HB_GLASS};
 }}
 
 html, body, [data-testid="stAppViewContainer"] {{
   background: var(--hb-bg)!important; color: var(--hb-text)!important;
 }}
 
+/* ---------- SIDEBAR ---------- */
 [data-testid="stSidebar"] {{
   background: linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,.02)) !important;
   border-right: 1px solid var(--hb-border);
@@ -305,7 +325,6 @@ html, body, [data-testid="stAppViewContainer"] {{
 [data-testid="stSidebar"] * {{
   color: var(--hb-text) !important;
 }}
-
 [data-testid="stSidebar"] h3, [data-testid="stSidebar"] h2 {{
   font-weight: 800; letter-spacing: .2px;
 }}
@@ -331,9 +350,7 @@ html, body, [data-testid="stAppViewContainer"] {{
   margin: .15rem 0;
   cursor: pointer;
 }}
-[data-testid="stSidebar"] .stRadio input[type="radio"] {{
-  opacity: 0; position: absolute; left: -9999px;
-}}
+[data-testid="stSidebar"] .stRadio input[type="radio"] {{ opacity: 0; position: absolute; left: -9999px; }}
 [data-testid="stSidebar"] .stRadio > div[role="radiogroup"] > label::before {{
   content: "";
   width: 10px; height: 10px; border-radius: 999px;
@@ -341,7 +358,6 @@ html, body, [data-testid="stAppViewContainer"] {{
   box-shadow: inset 0 0 0 1px rgba(255,255,255,.15);
   flex: 0 0 auto;
 }}
-
 [data-testid="stSidebar"] .stRadio > div[role="radiogroup"] > label:hover {{
   background: rgba(255,255,255,.07);
   border-color: rgba(255,255,255,.10);
@@ -363,20 +379,20 @@ html, body, [data-testid="stAppViewContainer"] {{
   margin-right: .1rem;
 }}
 
+/* ---------- Cards / inputs ---------- */
 .card{{ 
   background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
   border:1px solid var(--hb-border); border-radius:18px; padding:16px; margin-bottom:14px;
-  box-shadow: 0 6px 28px rgba(0,0,0,.25), inset 0 1px 0 rgba(255,255,255,.03);
-}}
+  box-shadow: 0 6px 28px rgba(0,0,0,.10), inset 0 1px 0 rgba(255,255,255,.03);
 }}
 .section-title {{
   background: linear-gradient(90deg, var(--hb-accent), var(--hb-accent2));
   color:#111; font-weight:800; text-align:center; padding:.6rem .8rem; border-radius:12px; margin:0 0 12px 0;
 }}
 .stTextInput input, .stTextArea textarea, .stNumberInput input, .stDateInput input {{
-  color:#fff!important; background:#0b0e14!important; border:1px solid #2b3548!important; border-radius:12px!important;
+  color:var(--hb-text)!important; background:transparent!important; border:1px solid var(--hb-border)!important; border-radius:12px!important;
 }}
-div[data-baseweb="select"] input, div[data-baseweb="select"] span {{ color:#fff!important; }}
+div[data-baseweb="select"] input, div[data-baseweb="select"] span {{ color:var(--hb-text)!important; }}
 label, .stMarkdown p, .block-label {{ color: var(--hb-text)!important; }}
 .stButton>button, .stDownloadButton>button {{
   background: linear-gradient(180deg, var(--hb-accent), var(--hb-accent2)); 
@@ -389,7 +405,7 @@ label, .stMarkdown p, .block-label {{ color: var(--hb-text)!important; }}
 .hb-banner.warn    {{ border-left:6px solid #facc15; }}
 .hb-banner.success {{ border-left:6px solid #22c55e; }}
 .hb-banner.error   {{ border-left:6px solid #ef4444; }}
-.dataframe thead tr th{{ background:#1b2230!important; color:#fff!important; border-bottom:1px solid var(--hb-border)!important; }}
+.dataframe thead tr th{{ background:{"#1b2230" if mode!="claro" else "#eef2ff"}!important; color:{"#fff" if mode!="claro" else "#0f1116"}!important; border-bottom:1px solid var(--hb-border)!important; }}
 .hb-topbar {{ height:6px; background: linear-gradient(90deg, var(--hb-accent), var(--hb-accent2)); border-radius:6px; margin:4px 0 10px 0; }}
 </style>
 """, unsafe_allow_html=True)
@@ -420,7 +436,8 @@ def banner(kind: str, text: str, button: dict | None = None):
             )
 
 def flash(kind: str, text: str, button: dict | None = None):
-    q = st.session_state.setdefault("_flash", [])
+    q = st.session_state_inject_css(s.get("theme_mode"))
+    
     q.append({"k": kind, "t": text, "b": button})
 
 def flash_render(clear: bool = True):
@@ -539,6 +556,18 @@ with tb3:
         s["logged_in"] = False
         flash("info", "Sessão encerrada.")
         _rerun()
+        # Após o radio:
+if "theme_prev" not in s:
+    s["theme_prev"] = s["theme_mode"]
+
+if s["theme_mode"] != s["theme_prev"]:
+    # persiste preferência
+    prefs = load_user_prefs()
+    prefs["theme_mode"] = s["theme_mode"]
+    save_user_prefs(prefs)
+    s["theme_prev"] = s["theme_mode"]
+    _inject_css(s["theme_mode"])  # re-injeta CSS no novo modo
+    _rerun()
 
 # =============================================================================
 # Painel Admin + Autorizações + Auditoria
