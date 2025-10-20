@@ -1541,6 +1541,20 @@ if st.button("🔎 Buscar CNPJ (APIBrasil)", use_container_width=True, key="cli_
         if cli_sel:
             with SessionLocal() as sess:
                 c = sess.get(Cliente, cli_sel.id)
+                if st.button("🔄 Atualizar pelos dados do CNPJ (APIBrasil)", key=f"cli_edit_busca_cnpj_{c.id}"):
+    if not (c.documento or "").strip():
+        banner("warn", "Este cliente não possui CNPJ cadastrado.")
+    else:
+        info = fetch_cnpj_apibrasil(c.documento)
+        if not info:
+            banner("error", "Falha ao obter dados do CNPJ.")
+        else:
+            # Atualiza apenas campos vazios (ou force se preferir)
+            if not c.nome: c.nome = info["razao"] or info["fantasia"] or c.nome
+            if not c.email and info["email"]: c.email = info["email"]
+            if not c.telefone and info["telefone"]: c.telefone = info["telefone"]
+            sess.commit()
+            banner("success", "Cliente atualizado a partir do CNPJ.")
 
                 e1, e2 = st.columns(2)
                 with e1:
