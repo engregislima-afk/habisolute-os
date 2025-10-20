@@ -2330,7 +2330,7 @@ def page_export():
                 st.download_button("Baixar backup", data=f.read(), file_name=p.name, mime="application/zip", key="dl_backup_zip")
 
 # ===================== MENU / ROUTER =====================
-st.sidebar.markdown("### 🧭 Navegação")
+st.sidebar.markdown("###  Sistema OS")
 st.sidebar.markdown(
     """
 <div class="hb-side-title">
