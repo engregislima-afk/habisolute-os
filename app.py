@@ -2629,6 +2629,56 @@ def apibrasil_token_ui():
 
 # chame o painel no sidebar (logo abaixo do menu):
 apibrasil_token_ui()
+# --- CONFIG: APIBrasil (salvar token) ---
+def apibrasil_token_ui():
+    st.sidebar.markdown("### 🔑 APIBrasil — CNPJ")
+    with st.sidebar.expander("Configuração APIBrasil", expanded=False):
+        prefs = load_user_prefs()
+        saved = (prefs.get("apibrasil_token") or "").strip()
+        token = st.text_input(
+            "Token (aceita 'Bearer ...' ou apenas a chave)",
+            value=saved,
+            type="password",
+            placeholder="ex.: Bearer SEU_TOKEN_AQUI ou só a_chave",
+            key="apibrasil_token_input",
+        )
+        c1, c2 = st.columns([1,1])
+        with c1:
+            if st.button("💾 Salvar token", key="btn_save_apibrasil"):
+                prefs["apibrasil_token"] = (token or "").strip()
+                save_user_prefs(prefs)
+                flash("success", "Token salvo. Pronto para usar o Buscar CNPJ.")
+                _rerun()
+        with c2:
+            # Teste rápido opcional: verifica se o header está aceito
+            if st.button("🔎 Testar token", key="btn_test_apibrasil"):
+                import re, requests
+                hdrs = []
+                raw = (token or "").strip()
+                low = raw.lower()
+                if low.startswith("bearer "):
+                    hdrs.append({"Authorization": raw})
+                elif low.startswith("x-api-key "):
+                    hdrs.append({"X-Api-Key": raw.split(None,1)[1]})
+                elif raw:
+                    hdrs.append({"Authorization": f"Bearer {raw}"})
+                    hdrs.append({"X-Api-Key": raw})
+                ok = False; msg = ""
+                for h in hdrs or [{}]:
+                    try:
+                        # ping leve em um CNPJ de teste (não precisa existir, só valida 401/403)
+                        r = requests.get("https://api.apibrasil.io/v2/cnpj/00000000000000", headers=h, timeout=10)
+                        if r.status_code not in (401,403): ok=True; break
+                        msg = f"HTTP {r.status_code}"
+                    except Exception as e:
+                        msg = str(e)
+                if ok:
+                    flash("success", "Token parece válido (header aceito).")
+                else:
+                    flash("warn", f"Token ainda não aceito pela API ({msg}). Revise o formato.")
+
+# chame o painel no sidebar (logo abaixo do menu):
+apibrasil_token_ui()
 
 def main_router():
     flash_render()
