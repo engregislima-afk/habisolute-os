@@ -417,4 +417,89 @@ def page_clientes():
                 novo_bloq = col_b1.checkbox("Cliente bloqueado", value=bloqueado_atual, key=f"cli_edit_bloq_{c.id}")
                 novo_motivo = col_b2.text_input("Motivo (opcional)", value=c.bloqueado_motivo or "", key=f"cli_edit_bloqmot_{c.id}")
 
-                bcol1, bcol2 = st.columns([1,]()
+                bcol1, bcol2 = st.columns([1, 1])
+                if bcol1.button("Salvar alterações", use_container_width=True, key=f"cli_save_{c.id}"):
+                    dup = sess.execute(select(Cliente).where(Cliente.nome == c.nome, Cliente.id != c.id)).scalars().first()
+                    if dup:
+                        banner("error", "Já existe outro cliente com esse nome.")
+                    else:
+                        if novo_bloq and not bloqueado_atual:
+                            c.bloqueado = 1; c.bloqueado_desde = date.today(); c.bloqueado_motivo = (novo_motivo or "Bloqueado")
+                        elif not novo_bloq and bloqueado_atual:
+                            c.bloqueado = 0; c.bloqueado_desde = None; c.bloqueado_motivo = None
+                        else:
+                            c.bloqueado_motivo = (novo_motivo or None)
+                        # persiste CNPJ editado
+                        c.documento = st.session_state.get(f"cli_edit_doc_{c.id}") or c.documento
+                        sess.commit(); flash("success", "Cliente atualizado."); _rerun()
+
+                with SessionLocal() as s2:
+                    obras_vinc = s2.query(Obra).filter(
+                        (Obra.cliente_id == c.id) | (func.trim(func.coalesce(Obra.cliente, "")) == c.nome)
+                    ).count()
+                if obras_vinc > 0:
+                    bcol2.button("Excluir (bloqueado — possui obras)", disabled=True, use_container_width=True, key=f"cli_del_btn_{c.id}")
+                    banner("warn", f"Este cliente possui {obras_vinc} obra(s) vinculada(s).")
+                else:
+                    conf = st.checkbox("Confirmo a exclusão deste cliente", key=f"cli_del_conf_{c.id}")
+                    if bcol2.button("Excluir cliente", use_container_width=True, disabled=not conf, key=f"cli_del_{c.id}"):
+                        sess.delete(c); sess.commit(); flash("success", "Cliente excluído."); _rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
+
+# ===================== DEMAIS PÁGINAS (mantidas) =====================
+# Use exatamente as versões que você já tinha para:
+# page_obras, page_servicos, page_emitir_os, page_visualizar_imprimir,
+# page_medicao, page_relatorios, page_export
+# (nenhuma funcionalidade foi alterada nelas)
+
+# ===================== MENU / ROUTER =====================
+st.sidebar.markdown("###  Sistema OS")
+st.sidebar.markdown(
+    """
+<div class="hb-side-title">
+  <span class="hb-dot"></span>
+  <span>Navegação</span>
+</div>
+""",
+    unsafe_allow_html=True,
+)
+MENU = [
+    "Emitir OS","Cadastro: Clientes","Cadastro: Obras","Cadastro: Serviços",
+    "Visualizar / Imprimir","Medição Mensal","Relatórios","Exportações",
+]
+page = st.sidebar.radio("Ir para", MENU, index=0, label_visibility="collapsed", key="router_menu")
+
+def _has(perm: str)->bool:
+    return has_perm(s.get("username",""), s.get("role","usuario"), perm) or s.get("is_admin", False)
+
+def main_router():
+    flash_render()
+    if page == "Cadastro: Clientes":
+        if _has("relatorios_export"): page_clientes()
+        else: banner("error", "Sem permissão (relatorios_export).")
+    elif page == "Cadastro: Obras":
+        if _has("relatorios_export"): page_obras()
+        else: banner("error", "Sem permissão (relatorios_export).")
+    elif page == "Cadastro: Serviços":
+        if _has("relatorios_export"): page_servicos()
+        else: banner("error", "Sem permissão (relatorios_export).")
+    elif page == "Visualizar / Imprimir":
+        if _has("os_view"): page_visualizar_imprimir()
+        else: banner("error", "Sem permissão (os_view).")
+    elif page == "Medição Mensal":
+        if _has("relatorios_export"): page_medicao()
+        else: banner("error", "Sem permissão (relatorios_export).")
+    elif page == "Relatórios":
+        if _has("relatorios_export"): page_relatorios()
+        else: banner("error", "Sem permissão (relatorios_export).")
+    elif page == "Exportações":
+        if _has("relatorios_export"): page_export()
+        else: banner("error", "Sem permissão (relatorios_export).")
+    else:
+        if _has("dashboard_view") or _has("os_create"):
+            page_emitir_os()
+        else:
+            banner("error", "Sem permissão (dashboard_view).")
+
+# ====== Entry point ======
+main_router()
