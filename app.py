@@ -119,7 +119,6 @@ s.setdefault("brand", load_user_prefs().get("brand", "Laranja"))
 s.setdefault("_flash", [])
 
 def _rerun():
-    # Compatível com novas versões do Streamlit
     try:
         st.rerun()
     except Exception:
@@ -129,7 +128,7 @@ def _rerun():
             pass
 
 # =============================================================================
-# Auth (JSON local para papéis/perms) — independente do banco da OS
+# Auth (JSON local)
 # =============================================================================
 def _hash_password_simple(pw: str) -> str:
     return hashlib.sha256((f"{SYSTEM_CODE}|" + pw).encode("utf-8")).hexdigest()
@@ -297,7 +296,6 @@ html, body, [data-testid="stAppViewContainer"] {{
   background: var(--hb-bg)!important; color: var(--hb-text)!important;
 }}
 
-/* ---------- SIDEBAR (Windows 11 / Fluent) ---------- */
 [data-testid="stSidebar"] {{
   background: linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,.02)) !important;
   border-right: 1px solid var(--hb-border);
@@ -311,7 +309,6 @@ html, body, [data-testid="stAppViewContainer"] {{
 [data-testid="stSidebar"] h3, [data-testid="stSidebar"] h2 {{
   font-weight: 800; letter-spacing: .2px;
 }}
-/* Título com faixa */
 .hb-side-title {{
   display:flex; align-items:center; gap:.5rem;
   margin: .25rem 0 1rem 0;
@@ -323,9 +320,7 @@ html, body, [data-testid="stAppViewContainer"] {{
   box-shadow: 0 0 10px rgba(249,115,22,.55);
 }}
 
-/* Grupo do radio da navegação */
 [data-testid="stSidebar"] .stRadio > div[role="radiogroup"] > label {{
-  /* cada opção */
   position: relative;
   display: flex; align-items: center; gap:.6rem;
   padding: .55rem .75rem;
@@ -336,7 +331,6 @@ html, body, [data-testid="stAppViewContainer"] {{
   margin: .15rem 0;
   cursor: pointer;
 }}
-/* Esconde o círculo nativo e cria um "badge" próprio */
 [data-testid="stSidebar"] .stRadio input[type="radio"] {{
   opacity: 0; position: absolute; left: -9999px;
 }}
@@ -348,13 +342,10 @@ html, body, [data-testid="stAppViewContainer"] {{
   flex: 0 0 auto;
 }}
 
-/* Hover */
 [data-testid="stSidebar"] .stRadio > div[role="radiogroup"] > label:hover {{
   background: rgba(255,255,255,.07);
   border-color: rgba(255,255,255,.10);
 }}
-
-/* Selecionado (usa o input:checked + div interno criado pelo Streamlit) */
 [data-testid="stSidebar"] .stRadio input[type="radio"]:checked + div {{
   color: #0b0e14 !important;
   background: linear-gradient(180deg, var(--hb-accent), var(--hb-accent2));
@@ -364,7 +355,6 @@ html, body, [data-testid="stAppViewContainer"] {{
   border-radius: 14px;
   padding: .55rem .75rem;
 }}
-/* “Ponto” do selecionado — reforça a seleção */
 [data-testid="stSidebar"] .stRadio input[type="radio"]:checked + div::before {{
   content: "";
   width: 10px; height: 10px; border-radius: 999px;
@@ -373,8 +363,7 @@ html, body, [data-testid="stAppViewContainer"] {{
   margin-right: .1rem;
 }}
 
-/* ---------- Cards / botões / inputs (como você já tinha) ---------- */
-.card{{ 
+.card{ 
   background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
   border:1px solid var(--hb-border); border-radius:18px; padding:16px; margin-bottom:14px;
   box-shadow: 0 6px 28px rgba(0,0,0,.25), inset 0 1px 0 rgba(255,255,255,.03);
@@ -448,7 +437,7 @@ def _render_header():
     st.markdown(f"<div class='card' style='padding:.8rem 1rem;'><b>🏗️ {SYSTEM_NAME}</b></div>", unsafe_allow_html=True)
 
 # =============================================================================
-# Login UI + troca de senha usando o JSON local (papéis/perms)
+# Login UI
 # =============================================================================
 def _recover_admin():
     db = _load_users()
@@ -491,8 +480,7 @@ def _auth_login_ui():
     rec1, rec2 = st.columns([1,1])
     with rec1:
         if st.button("Recuperar acesso (admin)", use_container_width=True):
-            _recover_admin()
-            _rerun()
+            _recover_admin(); _rerun()
     with rec2:
         st.markdown(f"<div class='hb-banner info'>📁 Base local: <code>{PREFS_DIR}</code></div>", unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
@@ -550,7 +538,8 @@ with tb3:
         s["logged_in"] = False
         flash("info", "Sessão encerrada.")
         _rerun()
-        # =============================================================================
+
+# =============================================================================
 # Painel Admin + Autorizações + Auditoria
 # =============================================================================
 CAN_ADMIN      = bool(s.get("is_admin", False))
@@ -659,7 +648,6 @@ if CAN_VIEW_AUDIT:
         if df_log.empty:
             banner("info", "Sem eventos de auditoria ainda.")
         else:
-            # Filtros
             c1, c2, c3, c4 = st.columns([1.4, 1.2, 1.2, 1.0])
             with c1:
                 users_opt = ["(Todos)"] + sorted([u for u in df_log["user"].dropna().unique().tolist()])
@@ -718,13 +706,13 @@ if CAN_VIEW_AUDIT:
 # =============================================================================
 Base = declarative_base()
 
-# Usuários do DB (usados no login alternativo por tabela se quiser no futuro)
+# Usuários do DB (futuro)
 class User(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True)
     username = Column(String, unique=True, nullable=False)
-    salt = Column(String, nullable=True)     # pode estar nulo se ainda não migrado
-    pw_hash = Column(String, nullable=True)  # idem
+    salt = Column(String, nullable=True)
+    pw_hash = Column(String, nullable=True)
     is_active = Column(Integer, default=1)
 
 def _hash_password(password: str, salt_hex: str | None = None) -> tuple[str, str]:
@@ -778,6 +766,16 @@ class Servico(Base):
     ativo = Column(Integer, default=1)
     itens = relationship("OSItem", back_populates="servico", cascade="all, delete")
 
+# >>>>>>>>>>>>>>>>>>>>>>>>> NOVO: Serviços por Obra <<<<<<<<<<<<<<<<<<<<<<<<<
+class ObraServico(Base):
+    __tablename__ = "obra_servicos"
+    id = Column(Integer, primary_key=True)
+    obra_id = Column(Integer, ForeignKey("obras.id"), nullable=False, index=True)
+    servico_id = Column(Integer, ForeignKey("servicos.id"), nullable=False, index=True)
+    preco_unit = Column(Float)   # preço específico para esta obra
+    ativo = Column(Integer, default=1)
+    servico = relationship("Servico")
+
 class OS(Base):
     __tablename__ = "os"
     id = Column(Integer, primary_key=True)
@@ -795,6 +793,8 @@ class OSItem(Base):
     os_id = Column(Integer, ForeignKey("os.id"))
     servico_id = Column(Integer, ForeignKey("servicos.id"))
     quantidade_prevista = Column(Float)
+    # >>> snapshot de preço no momento da emissão:
+    preco_unit = Column(Float)
     os = relationship("OS", back_populates="itens")
     servico = relationship("Servico", back_populates="itens")
 
@@ -821,7 +821,6 @@ with engine.begin() as conn:
     conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_os_numero ON os(numero);")
     conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_ositem_osid ON os_itens(os_id);")
     conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_medicoes_obra ON medicoes(obra_id);")
-
 def _ensure_medicoes_schema(engine):
     with engine.begin() as conn:
         tables = {r[0] for r in conn.exec_driver_sql("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
@@ -923,10 +922,43 @@ def _ensure_users_schema_and_default(engine):
                 ",".join(str(r[0]) for r in orphan_ids)
             )
 
+# >>>>>>>>>>>>>>>>>>>>>>>>> NOVO: Garantir obra_servicos + snapshot em os_itens <<<<<<<<<<<<<<<<<<<<<<<<<
+def _ensure_obra_servicos_schema_and_indexes(engine):
+    with engine.begin() as conn:
+        tables = {r[0] for r in conn.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()}
+        if "obra_servicos" not in tables:
+            conn.exec_driver_sql("""
+                CREATE TABLE obra_servicos (
+                    id INTEGER PRIMARY KEY,
+                    obra_id INTEGER NOT NULL,
+                    servico_id INTEGER NOT NULL,
+                    preco_unit REAL,
+                    ativo INTEGER DEFAULT 1,
+                    FOREIGN KEY(obra_id) REFERENCES obras(id),
+                    FOREIGN KEY(servico_id) REFERENCES servicos(id)
+                )
+            """)
+            conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_obraserv_obra ON obra_servicos(obra_id)")
+            conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_obraserv_srv  ON obra_servicos(servico_id)")
+
+        cols = {r[1] for r in conn.exec_driver_sql("PRAGMA table_info('os_itens')").fetchall()}
+        if "preco_unit" not in cols:
+            conn.exec_driver_sql("ALTER TABLE os_itens ADD COLUMN preco_unit REAL")
+            conn.exec_driver_sql("""
+                UPDATE os_itens
+                SET preco_unit = (
+                    SELECT preco_unit FROM servicos s WHERE s.id = os_itens.servico_id
+                )
+                WHERE preco_unit IS NULL
+            """)
+
 _ensure_medicoes_schema(engine)
 _ensure_clientes_schema_and_backfill(engine)
 _ensure_obras_attachments(engine)
 _ensure_users_schema_and_default(engine)
+_ensure_obra_servicos_schema_and_indexes(engine)
 
 # =============================================================================
 # Helpers
@@ -1321,6 +1353,7 @@ def gerar_pdf_fechamento(cliente_nome: str, periodo_str: str, linhas: list[dict]
               onFirstPage=lambda c, d: _on_page(c, d, titulo),
               onLaterPages=lambda c, d: _on_page(c, d, titulo))
     return buf.getvalue()
+
 # ===================== PÁGINAS: Cadastros =====================
 @require_perm("relatorios_export")
 def page_clientes():
@@ -1526,7 +1559,6 @@ def page_obras():
                 ok_prop, nm_prop = _abs_ok(o.anexo_proposta)
                 ok_cont, nm_cont = _abs_ok(o.anexo_contrato)
 
-                # Avisos visuais no estilo Fluent
                 faltando = []
                 if not ok_cnpj: faltando.append("Cartão CNPJ")
                 if not ok_prop: faltando.append("Proposta")
@@ -1556,6 +1588,62 @@ def page_obras():
                 conf = st.checkbox("Confirmo a exclusão desta obra (e suas OS)", key=f"obra_del_conf_{o.id}")
                 if b2.button("Excluir obra", use_container_width=True, disabled=not conf, key=f"obra_del_{o.id}"):
                     sess.delete(o); sess.commit(); flash("success", "Obra excluída."); _rerun()
+
+                # ================== NOVO BLOCO: Serviços por Obra ==================
+                st.markdown("##### Serviços desta obra (preços específicos)")
+                with SessionLocal() as sess_osv:
+                    catalogo = sess_osv.execute(select(Servico).order_by(Servico.codigo.asc())).scalars().all()
+                    vinculos = (sess_osv.query(ObraServico, Servico)
+                                .join(Servico, Servico.id == ObraServico.servico_id)
+                                .filter(ObraServico.obra_id == o.id)
+                                .order_by(Servico.codigo.asc())
+                                .all())
+
+                    if vinculos:
+                        df_osv = pd.DataFrame([{
+                            "id": osv.id, "codigo": srv.codigo, "descricao": srv.descricao,
+                            "un": srv.unidade, "preco_unit": osv.preco_unit, "ativo": osv.ativo
+                        } for (osv, srv) in vinculos])
+                        st.dataframe(df_osv, use_container_width=True, hide_index=True)
+                    else:
+                        banner("info", "Nenhum serviço vinculado a esta obra ainda.")
+
+                    st.markdown("###### Adicionar/editar vínculo")
+                    cadd1, cadd2, cadd3, cadd4 = st.columns([2, 1, 1, 1])
+                    srv_add = cadd1.selectbox("Serviço (catálogo)", catalogo,
+                                              format_func=lambda s: f"{s.codigo} — {s.descricao}")
+                    preco_add = cadd2.number_input("Preço p/ esta obra", min_value=0.0, step=1.0, value=float(srv_add.preco_unit or 0.0))
+                    ativo_add = cadd3.checkbox("Ativo", value=True)
+                    if cadd4.button("Salvar vínculo/atualizar", key=f"btn_save_vinc_{o.id}"):
+                        existente = (sess_osv.query(ObraServico)
+                                     .filter(ObraServico.obra_id == o.id, ObraServico.servico_id == srv_add.id)
+                                     .one_or_none())
+                        if existente is None:
+                            sess_osv.add(ObraServico(obra_id=o.id, servico_id=srv_add.id,
+                                                     preco_unit=preco_add, ativo=1 if ativo_add else 0))
+                        else:
+                            existente.preco_unit = preco_add
+                            existente.ativo = 1 if ativo_add else 0
+                        sess_osv.commit()
+                        flash("success", "Vínculo de serviço atualizado nesta obra.")
+                        _rerun()
+
+                    if vinculos:
+                        st.markdown("###### Ativar/Desativar/Remover")
+                        alvo = st.selectbox("Vínculo", vinculos,
+                                            format_func=lambda t: f"{t[1].codigo} — {t[1].descricao}")
+                        if alvo:
+                            osv, srv = alvo
+                            cedit1, cedit2, cedit3, cedit4 = st.columns([1,1,1,1])
+                            novo_preco = cedit1.number_input("Preço", min_value=0.0, step=1.0,
+                                                             value=float(osv.preco_unit or 0.0), key=f"preco_edit_{osv.id}")
+                            novo_ativo = cedit2.checkbox("Ativo", value=bool(osv.ativo), key=f"ativo_edit_{osv.id}")
+                            if cedit3.button("Salvar", key=f"save_edit_{osv.id}"):
+                                osv.preco_unit = novo_preco; osv.ativo = 1 if novo_ativo else 0
+                                sess_osv.commit(); flash("success","Vínculo salvo."); _rerun()
+                            if cedit4.button("Remover vínculo", key=f"del_edit_{osv.id}"):
+                                sess_osv.delete(osv); sess_osv.commit()
+                                flash("success","Vínculo removido."); _rerun()
         st.markdown("</div>", unsafe_allow_html=True)
 
 @require_perm("relatorios_export")
@@ -1630,18 +1718,34 @@ def page_servicos():
                 if b2.button("Excluir serviço", use_container_width=True, disabled=not conf, key=f"srv_del_{sdb.id}"):
                     sess.delete(sdb); sess.commit(); flash("success", "Serviço excluído."); _rerun()
         st.markdown('</div>', unsafe_allow_html=True)
-
 # ===================== PÁGINAS: Emissão e Impressão =====================
+def get_servicos_da_obra(sess: Session, obra_id: int) -> List[tuple[ObraServico, Servico]]:
+    q = (sess.query(ObraServico, Servico)
+         .join(Servico, Servico.id == ObraServico.servico_id)
+         .filter(ObraServico.obra_id == obra_id, ObraServico.ativo == 1)
+         .order_by(Servico.codigo.asc()))
+    return q.all()
+
+def get_preco_obra_or_cat(sess: Session, obra_id: int, servico_id: int) -> float:
+    p = (sess.query(ObraServico.preco_unit)
+           .filter(ObraServico.obra_id == obra_id, ObraServico.servico_id == servico_id)
+           .scalar())
+    if p is not None:
+        return float(p or 0.0)
+    base = sess.get(Servico, servico_id)
+    return float(base.preco_unit or 0.0)
+
 def obter_os_com_itens(sess: Session, os_id: int):
     os_row = sess.query(OS).options(selectinload(OS.itens).selectinload(OSItem.servico)).filter(OS.id == os_id).first()
     obra_row = sess.get(Obra, os_row.obra_id)
     itens = []
     for it in os_row.itens:
         sv = it.servico
+        preco = it.preco_unit if getattr(it, "preco_unit", None) is not None else (sv.preco_unit or 0.0)
         itens.append({
             "codigo": sv.codigo, "descricao": sv.descricao, "unidade": sv.unidade,
-            "qtd_prev": it.quantidade_prevista or 0.0, "preco_unit": sv.preco_unit or 0.0,
-            "subtotal": (sv.preco_unit or 0.0) * (it.quantidade_prevista or 0.0)
+            "qtd_prev": it.quantidade_prevista or 0.0, "preco_unit": preco,
+            "subtotal": preco * (it.quantidade_prevista or 0.0)
         })
     return os_row, obra_row, itens
 
@@ -1654,10 +1758,9 @@ def page_emitir_os():
         obras = sess.execute(
             select(Obra).options(selectinload(Obra.cliente_ref)).where(Obra.ativo == 1).order_by(Obra.nome.asc())
         ).scalars().all()
-        servs = sess.execute(select(Servico).where(Servico.ativo == 1).order_by(Servico.codigo.asc())).scalars().all()
 
-    if not obras or not servs:
-        banner("warn", "Cadastre ao menos 1 obra e 1 serviço para emitir OS.")
+    if not obras:
+        banner("warn", "Cadastre ao menos 1 obra para emitir OS.")
         return
 
     termo = st.text_input("Pesquisar obra", placeholder="Digite parte do nome/endereço/cliente", key="q_obra_emit").strip().lower()
@@ -1738,29 +1841,52 @@ def page_emitir_os():
     data_emissao = st.date_input("Data de Emissão", value=date.today(), key="dt_emissao_os")
     observ = st.text_area("Observações (opcional)", key="obs_os")
 
-    st.markdown("##### Itens da OS")
-    c1, c2, c3, c4 = st.columns([2, 4, 1, 2])
+    # ================== NOVO: lista de serviços da OBRA com preço da obra ==================
     with SessionLocal() as sess:
-        servs_all = sess.execute(select(Servico).where(Servico.ativo == 1).order_by(Servico.codigo.asc())).scalars().all()
-    q_srv = c2.text_input("Buscar serviço (código/descrição)", placeholder="ex.: CP28 ou rompimento", key="q_srv_os").strip().lower()
-    servs_filtrados = [s for s in servs_all if q_srv in f"{s.codigo} {s.descricao}".lower()] if q_srv else servs_all
-    serv_sel = c1.selectbox("Serviço", servs_filtrados, format_func=lambda sv: f"{sv.codigo} — {sv.descricao}", key="srv_sel_os")
-    qtd_prev = c4.number_input("Qtd. prevista", min_value=0.0, step=1.0, value=0.0, key="qtd_prev_os")
+        servs_pairs = get_servicos_da_obra(sess, obra_sel.id)  # [(ObraServico, Servico)]
+        if not servs_pairs:
+            banner("warn", "Esta obra não possui serviços vinculados. Cadastre em Cadastro → Obras → 'Serviços desta obra'.")
+            return
+        _servs_exib = [{
+            "srv_id": srv.id,
+            "codigo": srv.codigo,
+            "descricao": srv.descricao,
+            "un": srv.unidade,
+            "preco": float(osv.preco_unit or 0.0)
+        } for (osv, srv) in servs_pairs]
+
+    st.markdown("##### Itens da OS")
+    c1, c2, c3, c4, c5 = st.columns([2, 3, 1, 1.2, 1.3])
+
+    q_srv = c2.text_input("Buscar serviço (código/descrição)", placeholder="ex.: CP28 ou rompimento",
+                          key="q_srv_os").strip().lower()
+
+    servs_filtrados = [s for s in _servs_exib if q_srv in f"{s['codigo']} {s['descricao']}".lower()] if q_srv else _servs_exib
+    serv_sel = c1.selectbox("Serviço da obra", servs_filtrados,
+                            format_func=lambda sv: f"{sv['codigo']} — {sv['descricao']} (R$ {sv['preco']:.2f}/{sv['un']})",
+                            key="srv_sel_os")
+
+    qtd_prev = c3.number_input("Qtd.", min_value=0.0, step=1.0, value=0.0, key="qtd_prev_os")
+    preco_vinc = c4.number_input("Preço (obra)", min_value=0.0, step=1.0, value=float(serv_sel["preco"]), key="preco_sel_os")
+    subtotal_prev = qtd_prev * preco_vinc
+    c5.markdown(f"<div class='card'><b>Subtotal</b><div style='font-size:1.2rem'>{format_brl(subtotal_prev)}</div></div>", unsafe_allow_html=True)
 
     st.session_state.setdefault("itens_os_tmp", [])
-    if c3.button("Adicionar", disabled=bloqueio_ativo, key="btn_add_item_os"):
+    if st.button("Adicionar", disabled=bloqueio_ativo, key="btn_add_item_os"):
         if qtd_prev <= 0:
-            banner("error", "Informe uma quantidade prevista > 0.")
+            banner("error", "Informe uma quantidade > 0.")
         else:
-            st.session_state["itens_os_tmp"].append(
-                (serv_sel.id, serv_sel.codigo, serv_sel.descricao, serv_sel.unidade, float(qtd_prev))
-            )
+            st.session_state["itens_os_tmp"].append((
+                serv_sel["srv_id"], serv_sel["codigo"], serv_sel["descricao"],
+                serv_sel["un"], float(qtd_prev), float(preco_vinc)
+            ))
             flash("success", "Item adicionado.")
 
     if st.session_state["itens_os_tmp"]:
         df_it = pd.DataFrame(st.session_state["itens_os_tmp"],
-                             columns=["servico_id", "Código", "Descrição", "Un", "Qtd Prevista"])
-        st.dataframe(df_it[["Código", "Descrição", "Un", "Qtd Prevista"]], use_container_width=True)
+                             columns=["servico_id", "Código", "Descrição", "Un", "Qtd Prevista", "Preço Unit. (obra)"])
+        df_it["Subtotal"] = df_it["Qtd Prevista"] * df_it["Preço Unit. (obra)"]
+        st.dataframe(df_it[["Código","Descrição","Un","Qtd Prevista","Preço Unit. (obra)","Subtotal"]], use_container_width=True)
         colA, colB = st.columns([1, 3])
         if colA.button("Limpar itens", key="btn_clear_itens_os"):
             st.session_state["itens_os_tmp"] = []
@@ -1776,8 +1902,10 @@ def page_emitir_os():
                     nova = OS(numero=numero, data_emissao=data_emissao, obra_id=obra_sel.id,
                               observacoes=(observ or None), status="Aberta")
                     sess.add(nova); sess.flush()
-                    for (sid, _cod, _desc, _un, qtd) in st.session_state["itens_os_tmp"]:
-                        sess.add(OSItem(os_id=nova.id, servico_id=sid, quantidade_prevista=(qtd or None)))
+                    for (sid, _cod, _desc, _un, qtd, preco_snap) in st.session_state["itens_os_tmp"]:
+                        sess.add(OSItem(os_id=nova.id, servico_id=sid,
+                                        quantidade_prevista=(qtd or None),
+                                        preco_unit=float(preco_snap)))  # snapshot
                     sess.commit(); ok = True
                 except Exception:
                     sess.rollback(); ok = False
@@ -1918,7 +2046,7 @@ def page_visualizar_imprimir():
     else:
         banner("info", "Esta OS ainda não possui itens.")
 
-    logo_b = None  # se quiser, guarde bytes de logo em st.session_state["logo_bytes"]
+    logo_b = None
     pdf_interno = gerar_pdf_os(os_row, obra_row, itens, show_prices=True, logo_bytes=logo_b)
     pdf_cliente = gerar_pdf_os(os_row, obra_row, itens, show_prices=False, logo_bytes=logo_b)
 
@@ -1952,7 +2080,6 @@ def page_medicao():
 
     obra_sel = st.selectbox("Obra", obras, format_func=lambda o: f"{o.nome} — {o.endereco}", key="obra_medicao_sel")
 
-    # Info de medição (dias em aberto)
     try:
         with SessionLocal() as sess:
             ultima_medida_dt = (sess.query(func.max(OS.data_emissao))
@@ -1975,7 +2102,6 @@ def page_medicao():
     except Exception:
         pass
 
-    # Bloqueio de cliente: pode gerar PDF, mas não gravar status
     cliente_bloqueado = False
     with SessionLocal() as scli:
         ob = scli.get(Obra, obra_sel.id)
@@ -2021,11 +2147,12 @@ def page_medicao():
 
     linhas = []
     for os_row, it, sv, ob in rows:
+        preco_snap = (it.preco_unit if getattr(it, "preco_unit", None) is not None else (sv.preco_unit or 0.0))
         linhas.append({
             "data": os_row.data_emissao, "os_num": os_row.numero, "status": os_row.status,
             "codigo": sv.codigo, "descricao": sv.descricao, "un": sv.unidade,
-            "qtd": (it.quantidade_prevista or 0.0), "preco": (sv.preco_unit or 0.0),
-            "subtotal": (sv.preco_unit or 0.0) * (it.quantidade_prevista or 0.0),
+            "qtd": (it.quantidade_prevista or 0.0), "preco": preco_snap,
+            "subtotal": preco_snap * (it.quantidade_prevista or 0.0),
         })
 
     st.markdown("#### Itens do período (após filtros)")
@@ -2105,7 +2232,6 @@ def page_relatorios():
     if not obras_cliente:
         banner("warn", "Não há obras vinculadas a este cliente."); return
 
-    # Status de medição por obra (dias)
     resumo_status = []
     with SessionLocal() as sess:
         for ob in obras_cliente:
@@ -2163,11 +2289,12 @@ def page_relatorios():
 
     linhas = []
     for os_row, it, sv, ob in rows:
+        preco_snap = (it.preco_unit if getattr(it, "preco_unit", None) is not None else (sv.preco_unit or 0.0))
         linhas.append({
             "data": os_row.data_emissao, "obra": ob.nome, "os_num": os_row.numero,
             "codigo": sv.codigo, "descricao": sv.descricao, "un": sv.unidade,
-            "qtd": (it.quantidade_prevista or 0.0), "preco": (sv.preco_unit or 0.0),
-            "subtotal": (sv.preco_unit or 0.0) * (it.quantidade_prevista or 0.0),
+            "qtd": (it.quantidade_prevista or 0.0), "preco": preco_snap,
+            "subtotal": preco_snap * (it.quantidade_prevista or 0.0),
         })
 
     st.markdown("#### Fechamento detalhado")
@@ -2203,6 +2330,15 @@ def page_export():
 
 # ===================== MENU / ROUTER =====================
 st.sidebar.markdown("### 🧭 Navegação")
+st.sidebar.markdown(
+    """
+<div class="hb-side-title">
+  <span class="hb-dot"></span>
+  <span>Navegação</span>
+</div>
+""",
+    unsafe_allow_html=True,
+)
 MENU = [
     "Emitir OS",
     "Cadastro: Clientes",
@@ -2219,7 +2355,6 @@ def _has(perm: str)->bool:
     return has_perm(s.get("username",""), s.get("role","usuario"), perm) or s.get("is_admin", False)
 
 def main_router():
-    # Renderiza mensagens pendentes do ciclo anterior
     flash_render()
     if page == "Cadastro: Clientes":
         if _has("relatorios_export"): page_clientes()
@@ -2250,5 +2385,3 @@ def main_router():
 
 # ====== Entry point ======
 main_router()
-
-
