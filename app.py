@@ -1085,80 +1085,110 @@ def _get_apibrasil_token() -> str | None:
     except Exception:
         return None
 
-def fetch_cnpj_apibrasil(cnpj: str) -> dict | None:
-    digits = _cnpj_digits(cnpj)
-    if len(digits) != 14:
+import re, requests
+
+def fetch_cnpj_apibrasil(doc: str) -> dict | None:
+    """
+    Retorna um dicionário padronizado:
+      { 'razao': str|None, 'email': str|None, 'telefone': str|None, 'endereco': str|None }
+    ou None em caso de erro.
+    """
+    # Sanitiza CNPJ
+    cnpj = re.sub(r"\D+", "", doc or "")
+    if len(cnpj) != 14:
+        banner("warn", "CNPJ em formato inválido (use 14 dígitos).")
         return None
 
-    token = _get_apibrasil_token()
-    if not token:
+    prefs = load_user_prefs()
+    raw = (prefs.get("apibrasil_token") or "").strip()
+    if not raw:
+        banner("warn", "Token da APIBrasil não configurado. Salve o token nas preferências.")
         return None
 
-    url = f"https://api.apibrasil.com.br/cnpj/v1/{digits}"
-    req = urllib.request.Request(url)
-    req.add_header("Authorization", f"Bearer {token}")
-    req.add_header("Accept", "application/json")
+    # Monta cabeçalhos tentando os dois formatos aceitos
+    headers_opts = []
+    low = raw.lower()
+    if low.startswith("bearer "):
+        headers_opts.append({"Authorization": raw})
+    elif low.startswith("x-api-key "):
+        headers_opts.append({"X-Api-Key": raw.split(None, 1)[1]})
+    else:
+        headers_opts.append({"Authorization": f"Bearer {raw}"})
+        headers_opts.append({"X-Api-Key": raw})
 
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            raw = resp.read()
-            data = json.loads(raw.decode("utf-8", errors="ignore")) if raw else {}
-    except urllib.error.HTTPError:
-        try:
-            req2 = urllib.request.Request(url)
-            req2.add_header("X-Api-Key", token)
-            req2.add_header("Accept", "application/json")
-            with urllib.request.urlopen(req2, timeout=15) as resp2:
-                raw2 = resp2.read()
-                data = json.loads(raw2.decode("utf-8", errors="ignore")) if raw2 else {}
-        except Exception:
-            return None
-    except Exception:
-        return None
+    # URLs (1) APIBrasil; (2) fallback opcional BrasilAPI
+    urls = [
+        f"https://api.apibrasil.io/v2/cnpj/{cnpj}",
+        f"https://brasilapi.com.br/api/cnpj/v1/{cnpj}",  # fallback
+    ]
 
-    if not isinstance(data, dict):
-        return None
+    # tenta sequencialmente
+    last_text = ""
+    for ui, url in enumerate(urls):
+        for hi, h in enumerate(headers_opts if ui == 0 else [{}]):  # BrasilAPI não usa token
+            try:
+                r = requests.get(url, headers=h, timeout=15)
+                last_text = r.text
+                # trata 429/401/403 com mensagens melhores
+                if r.status_code == 429:
+                    banner("warn", "Limite de requisições atingido na API. Tente novamente em alguns minutos.")
+                    return None
+                if r.status_code in (401, 403):
+                    # tenta o próximo formato de header
+                    continue
+                if r.status_code >= 400:
+                    # tenta próximo provedor/url
+                    break
+                j = r.json()
+            except Exception as e:
+                last_text = f"{type(e).__name__}: {e}"
+                continue
 
-    def g(*keys, default=None):
-        for k in keys:
-            v = data.get(k)
-            if v not in (None, "", {}):
-                return v
-        return default
+            # Parse robusto (APIBrasil e BrasilAPI)
+            def pick(*keys, src=None, default=None):
+                src = src or j
+                for k in keys:
+                    if isinstance(src, dict) and k in src and src[k]:
+                        return src[k]
+                return default
 
-    estab = data.get("estabelecimento") if isinstance(data.get("estabelecimento"), dict) else {}
-    address = estab if estab else data
+            data = j.get("data") if isinstance(j, dict) else None
+            raiz = data if isinstance(data, dict) else j
 
-    razao     = g("razao_social", "razao", "nome_empresarial", default=None)
-    fantasia  = g("nome_fantasia", "fantasia", default=None)
-    email     = g("email", "email_socio", default=None) or address.get("email")
-    telefone  = g("telefone", "telefone1", "ddd_telefone_1", default=None) or address.get("telefone1")
+            razao = pick("razao_social", "razaoSocial", "nome_fantasia", "nomeFantasia", "nome", src=raiz)
+            email = pick("email", "emails", src=raiz)
+            if isinstance(email, list):
+                email = ", ".join([str(x) for x in email if x])
 
-    logradouro = address.get("logradouro") or address.get("tipo_logradouro") or ""
-    numero     = address.get("numero") or ""
-    bairro     = address.get("bairro") or ""
-    municipio  = address.get("cidade") or address.get("municipio") or address.get("nome_cidade") or ""
-    uf         = address.get("uf") or address.get("estado") or ""
-    cep        = (address.get("cep") or "").replace(".", "").replace("-", "")
-    cep_fmt    = f"{cep[:5]}-{cep[5:]}" if len(cep) == 8 else cep
+            tel = pick("telefone", "telefones", "telefone1", src=raiz)
+            if isinstance(tel, list):
+                tel = ", ".join([str(x) for x in tel if x])
 
-    endereco = ", ".join([p for p in [logradouro, str(numero or "").strip()] if str(p).strip()])
-    complemento = " - ".join([p for p in [bairro, municipio] if str(p).strip()])
-    if complemento:
-        endereco = f"{endereco} - {complemento}"
-    if uf:
-        endereco = f"{endereco}/{uf}"
-    if cep_fmt:
-        endereco = f"{endereco} - {cep_fmt}"
+            # Endereço
+            end_src = pick("endereco", "address", src=raiz, default={}) or {}
+            if not isinstance(end_src, dict):
+                end_src = raiz.get("endereco") or raiz.get("address") or {}
+            log = pick("logradouro", "street", src=end_src, default="")
+            num = pick("numero", "number", src=end_src, default="")
+            bai = pick("bairro", "district", src=end_src, default="")
+            mun = pick("municipio", "cidade", "city", src=end_src, default="")
+            uf  = pick("uf", "estado", "state", src=end_src, default="")
+            cep = pick("cep", "zip", src=end_src, default="")
+            endereco = " ".join([s for s in [log, num] if s]).strip()
+            comp = ", ".join([s for s in [bai, mun, uf, cep] if s]).strip()
+            if comp:
+                endereco = f"{endereco} — {comp}" if endereco else comp
 
-    out = {
-        "razao": razao,
-        "fantasia": fantasia,
-        "email": email,
-        "telefone": telefone,
-        "endereco": endereco if endereco.strip() else None,
-    }
-    return {k: (v if (isinstance(v, (int, float)) or (isinstance(v, str) and v.strip())) else None) for k, v in out.items()}
+            return {
+                "razao": (str(razao).strip() if razao else None),
+                "email": (str(email).strip() if email else None),
+                "telefone": (str(tel).strip() if tel else None),
+                "endereco": (str(endereco).strip() if endereco else None),
+            }
+
+    # se chegou aqui, nada deu certo
+    banner("warn", "CNPJ inválido, token ausente ou não encontrado. Detalhe técnico: " + (last_text[:240] + ("..." if len(last_text) > 240 else "")))
+    return None
 
 # =============================================================================
 # PDFs (OS, Medição, Fechamento)
