@@ -1473,6 +1473,17 @@ def page_clientes():
         telefone = st.text_input("Telefone — opcional", key="cli_new_tel")
         ativo = st.checkbox("Ativo", value=True, key="cli_new_ativo")
         # Botão: buscar dados por CNPJ
+    def cnpj_is_valid(cnpj: str) -> bool:
+    c = _clean_cnpj(cnpj)
+    if len(c) != 14 or len(set(c)) == 1:
+        return False
+    # cálculo dos dígitos
+    def _dig(s, m):
+        r = sum(int(x)*y for x,y in zip(s, m)) % 11
+        return '0' if r < 2 else str(11 - r)
+    d1 = _dig(c[:12], [5,4,3,2,9,8,7,6,5,4,3,2])
+    d2 = _dig(c[:12] + d1, [6,5,4,3,2,9,8,7,6,5,4,3,2])
+    return c[-2:] == d1 + d2
 if st.button("🔎 Buscar CNPJ (APIBrasil)", use_container_width=True, key="cli_new_busca_cnpj"):
     if not (documento or "").strip():
         banner("warn", "Informe o CNPJ para buscar.")
