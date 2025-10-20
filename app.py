@@ -1478,7 +1478,7 @@ def page_clientes():
     if len(c) != 14 or len(set(c)) == 1:
         return False
     # cálculo dos dígitos
-    def _dig(s, m):
+def _dig(s, m):
         r = sum(int(x)*y for x,y in zip(s, m)) % 11
         return '0' if r < 2 else str(11 - r)
     d1 = _dig(c[:12], [5,4,3,2,9,8,7,6,5,4,3,2])
