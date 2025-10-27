@@ -1,223 +1,224 @@
-import io
-import json
-import secrets
-import hashlib
-import hmac
-from datetime import datetime
+# -*- coding: utf-8 -*-
+# Habisolute â€” Sistema de OS (Streamlit)
+# Visual Fluent/Windows 11 + banners + avisos + mediÃ§Ã£o em dias
+
+import io, re, os, json, base64, tempfile, zipfile, hashlib, hmac, secrets, calendar
+from datetime import date, datetime
 from pathlib import Path
-from typing import Optional, Dict
 from typing import Optional, Tuple, List, Dict, Any
 
 import streamlit as st
-from pathlib import Path
-# outras importações...
+import pandas as pd
 
-SYSTEM_NAME = "Habisolute — Sistema de OS"
-SYSTEM_CODE = "hab_os"
-BRAND_COLOR = "#f97316"  # COR LARANJA BASE
+# SQLAlchemy
+from sqlalchemy import (
+    create_engine, Column, Integer, String, Float, Date, ForeignKey, Text,
+    select, func
+)
+from sqlalchemy.orm import declarative_base, sessionmaker, relationship, Session, selectinload
 
-def _inject_css(theme: str | None = None):
-    # definição das cores base dependendo do tema...
-    st.markdown(f"""
-    <style>
-    :root {{
-      --hb-accent: {BRAND_COLOR};
-      /* outras variáveis CSS */
-    }}
-    </style>
-    """, unsafe_allow_html=True)
+# ReportLab (PDF)
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.units import mm
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_CENTER
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
+try:
+    from reportlab.platypus import KeepTogether
+except Exception:
+    from reportlab.platypus.flowables import KeepTogether
 
-# ... restante do código ...
+# =============================================================================
+# Identidade / Config
+# =============================================================================
+SYSTEM_NAME = "Habisolute â€” Sistema de OS"
+SYSTEM_CODE = "hab_os"      # pasta local .hab_os na raiz do projeto
+BRAND_COLOR = "#f97316"     # laranja base
 
-_inject_css()
+st.set_page_config(page_title=SYSTEM_NAME, layout="wide", initial_sidebar_state="expanded")
 
-# Paths
-BASEDIR = Path(__file__).resolve().parent
-PREFSDIR = BASEDIR / ".habos"
-PREFSDIR.mkdir(parents=True, exist_ok=True)
-USERSDB = PREFSDIR / "users.json"
-PERMSDB = PREFSDIR / "perms.json"
-PREFSPATH = PREFSDIR / "prefs.json"
-AUDITLOG = PREFSDIR / "audit.jsonl"
+BASE_DIR   = Path(__file__).resolve().parent
+PREFS_DIR  = BASE_DIR / f".{SYSTEM_CODE}"; PREFS_DIR.mkdir(parents=True, exist_ok=True)
+USERS_DB   = PREFS_DIR / "users.json"
+AUDIT_LOG  = PREFS_DIR / "audit.jsonl"
+PERMS_DB   = PREFS_DIR / "perms.json"
+PREFS_PATH = PREFS_DIR / "prefs.json"
 
-SYSTEMCODE = "habos"
+# =============================================================================
+# PreferÃªncias simples
+# =============================================================================
+def _save_all_prefs(data: Dict[str, Any]) -> None:
+    tmp = PREFS_DIR / "prefs.tmp"
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"); tmp.replace(PREFS_PATH)
 
-# -- UTILS: Password hashing with PBKDF2-HMAC-SHA256 --
+def _load_all_prefs() -> Dict[str, Any]:
+    try:
+        if PREFS_PATH.exists(): return json.loads(PREFS_PATH.read_text(encoding="utf-8")) or {}
+    except Exception: pass
+    return {}
 
-def hash_password(password: str, salt_hex: Optional[str] = None) -> (str, str):
-    """Generate salted PBKDF2-HMAC-SHA256 password hash."""
-    salt = bytes.fromhex(salt_hex) if salt_hex else secrets.token_bytes(16)
-    pw_hash = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, 120000)
-    return salt.hex(), pw_hash.hex()
+def load_user_prefs(key: str="default")->Dict[str,Any]: 
+    return _load_all_prefs().get(key,{})
 
-def verify_password(password: str, salt_hex: str, pw_hash_hex: str) -> bool:
-    """Verify password against stored salt and hash securely."""
-    salt = bytes.fromhex(salt_hex)
-    expected_hash = bytes.fromhex(pw_hash_hex)
-    test_hash = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, 120000)
-    return hmac.compare_digest(test_hash, expected_hash)
+def save_user_prefs(prefs: Dict[str,Any], key: str="default")->None:
+    data=_load_all_prefs(); data[key]=prefs; _save_all_prefs(data)
 
-# -- USER MANAGEMENT --
+# =============================================================================
+# Auditoria
+# =============================================================================
+def _now_iso():
+    return datetime.utcnow().isoformat(timespec="seconds") + "Z"
 
-def load_users() -> Dict[str, Dict]:
-    """Load user database from JSON or initialize admin user."""
-    if USERSDB.exists():
-        try:
-            data = json.loads(USERSDB.read_text(encoding='utf-8'))
-            if not isinstance(data, dict) or 'users' not in data:
-                data = bootstrap_admin_users()
-                save_users(data)
-            return data
-        except Exception:
-            # Fail-safe: create default admin user
-            data = bootstrap_admin_users()
-            save_users(data)
-            return data
-    else:
-        data = bootstrap_admin_users()
-        save_users(data)
-        return data
-
-def save_users(data: Dict[str, Dict]) -> None:
-    tmp = USERSDB.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
-    tmp.replace(USERSDB)
-
-def bootstrap_admin_users() -> Dict[str, Dict]:
-    """Create default admin user with mandatory password change."""
-    admin_salt, admin_hash = hash_password("1234")
-    db = {'users': {
-        'admin': {
-            'password': admin_hash,
-            'salt': admin_salt,
-            'isadmin': True,
-            'active': True,
-            'mustchange': True,
-            'role': 'admin',
-            'createdat': datetime.now().isoformat()
+def log_event(action: str, meta: Dict[str, Any] | None = None, level: str = "INFO"):
+    try:
+        rec = {
+            "ts": _now_iso(),
+            "user": st.session_state.get("username") or "anon",
+            "level": level, "action": action, "meta": meta or {}, "system": SYSTEM_CODE,
         }
-    }}
+        with AUDIT_LOG.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+def read_audit_df() -> pd.DataFrame:
+    if not AUDIT_LOG.exists(): 
+        return pd.DataFrame(columns=["ts","user","level","action","meta","system"])
+    rows = []
+    with AUDIT_LOG.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line: continue
+            try:
+                rec = json.loads(line)
+                rows.append({
+                    "ts": rec.get("ts"), "user": rec.get("user"),
+                    "level": rec.get("level"), "action": rec.get("action"),
+                    "meta": json.dumps(rec.get("meta") or {}, ensure_ascii=False),
+                    "system": rec.get("system", ""),
+                })
+            except Exception:
+                continue
+    df = pd.DataFrame(rows, columns=["ts","user","level","action","meta","system"])
+    if not df.empty:
+        df = df.sort_values("ts", ascending=False, kind="stable").reset_index(drop=True)
+    return df
+
+# =============================================================================
+# Estado
+# =============================================================================
+s = st.session_state
+s.setdefault("logged_in", False)
+s.setdefault("username", None)
+s.setdefault("is_admin", False)
+s.setdefault("role", "usuario")     # usuario | gestor | diretoria | admin
+s.setdefault("must_change", False)
+s.setdefault("theme_mode", load_user_prefs().get("theme_mode", "Claro"))
+s.setdefault("brand", load_user_prefs().get("brand", "Laranja"))
+s.setdefault("_flash", [])
+
+def _rerun():
+    try:
+        st.rerun()
+    except Exception:
+        try:
+            st.experimental_rerun()
+        except Exception:
+            pass
+
+# =============================================================================
+# Auth (JSON local)
+# =============================================================================
+def _hash_password_simple(pw: str) -> str:
+    return hashlib.sha256((f"{SYSTEM_CODE}|" + pw).encode("utf-8")).hexdigest()
+
+def _verify_password_simple(pw: str, hashed: str) -> bool:
+    try:
+        return _hash_password_simple(pw) == hashed
+    except Exception:
+        return False
+
+def _save_users(data: Dict[str, Any]) -> None:
+    tmp = USERS_DB.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"); tmp.replace(USERS_DB)
+
+def _bootstrap_admin(db: Dict[str, Any]) -> Dict[str, Any]:
+    db.setdefault("users", {})
+    if "admin" not in db["users"]:
+        db["users"]["admin"] = {
+            "password": _hash_password_simple("1234"),
+            "is_admin": True, "active": True, "must_change": True,
+            "role": "admin", "created_at": datetime.now().isoformat(timespec="seconds")
+        }
     return db
 
+def _load_users() -> Dict[str, Any]:
+    try:
+        if USERS_DB.exists():
+            raw = USERS_DB.read_text(encoding="utf-8").strip()
+            if raw:
+                data = json.loads(raw)
+                if isinstance(data, dict) and isinstance(data.get("users"), dict):
+                    fixed = _bootstrap_admin(data)
+                    if fixed is not data: _save_users(fixed)
+                    return fixed
+                if isinstance(data, dict):
+                    fixed = _bootstrap_admin({"users": data}); _save_users(fixed); return fixed
+                if isinstance(data, list):
+                    users_map: Dict[str, Any] = {}
+                    for item in data:
+                        if isinstance(item, str):
+                            uname = item.strip()
+                            if not uname: continue
+                            users_map[uname] = {
+                                "password": _hash_password_simple("1234"),
+                                "is_admin": (uname=="admin"), "active": True, "must_change": True,
+                                "role": "admin" if uname=="admin" else "usuario",
+                                "created_at": datetime.now().isoformat(timespec="seconds")
+                            }
+                        elif isinstance(item, dict) and item.get("username"):
+                            uname = str(item["username"]).strip()
+                            if not uname: continue
+                            users_map[uname] = {
+                                "password": _hash_password_simple("1234"),
+                                "is_admin": bool(item.get("is_admin", uname=="admin")),
+                                "active": bool(item.get("active", True)),
+                                "must_change": True,
+                                "role": item.get("role", "usuario"),
+                                "created_at": item.get("created_at", datetime.now().isoformat(timespec="seconds"))
+                            }
+                    fixed = _bootstrap_admin({"users": users_map}); _save_users(fixed); return fixed
+    except Exception:
+        pass
+    default = _bootstrap_admin({"users": {}})
+    _save_users(default)
+    return default
+
+def user_get(username: str) -> Optional[Dict[str, Any]]:
+    return _load_users().get("users", {}).get(username)
+
+def user_set(username: str, record: Dict[str, Any]) -> None:
+    db = _load_users(); db.setdefault("users", {})[username] = record; _save_users(db)
+
 def user_exists(username: str) -> bool:
-    users = load_users()
-    return username in users.get('users', {})
+    return user_get(username) is not None
 
-def get_user(username: str) -> Optional[Dict]:
-    users = load_users()
-    return users.get('users', {}).get(username)
+def user_list() -> List[Dict[str, Any]]:
+    db = _load_users(); out=[]
+    for uname, rec in db.get("users", {}).items():
+        r = dict(rec); r["username"]=uname; out.append(r)
+    out.sort(key=lambda r:(not r.get("is_admin",False), r["username"]))
+    return out
 
-def set_user(username: str, record: Dict) -> None:
-    db = load_users()
-    db.setdefault('users', {})[username] = record
-    save_users(db)
+def user_delete(username: str) -> None:
+    db = _load_users()
+    if username in db.get("users", {}):
+        if username == "admin": return
+        db["users"].pop(username, None); _save_users(db)
 
-def verify_user_password(username: str, password: str) -> bool:
-    user = get_user(username)
-    if user and user.get('active'):
-        return verify_password(password, user['salt'], user['password'])
-    return False
-
-# -- SESSION STATE INIT --
-
-def init_session_state():
-    st.session_state.setdefault('loggedin', False)
-    st.session_state.setdefault('username', None)
-    st.session_state.setdefault('isadmin', False)
-    st.session_state.setdefault('role', 'usuario')
-    st.session_state.setdefault('mustchange', False)
-    st.session_state.setdefault('thememode', 'Claro')
-    st.session_state.setdefault('flash', [])
-
-# -- FLASH MESSAGING --
-
-def flash_message(kind: str, text: str):
-    st.session_state['flash'].append({'kind': kind, 'text': text})
-
-def render_flashes():
-    for m in st.session_state.get('flash', []):
-        if m['kind'] == 'error':
-            st.error(m['text'])
-        elif m['kind'] == 'warn':
-            st.warning(m['text'])
-        elif m['kind'] == 'success':
-            st.success(m['text'])
-        else:
-            st.info(m['text'])
-    st.session_state['flash'] = []
-
-# -- AUTHENTICATION UI --
-
-def login_ui():
-    st.header("Login")
-    user = st.text_input("Usuário")
-    pwd = st.text_input("Senha", type="password")
-    if st.button("Acessar"):
-        rec = get_user(user)
-        if not rec or not rec.get('active', False):
-            flash_message('error', "Usuário inexistente ou inativo.")
-        elif not verify_user_password(user, pwd):
-            flash_message('error', "Senha incorreta.")
-        else:
-            st.session_state.loggedin = True
-            st.session_state.username = user
-            st.session_state.isadmin = bool(rec.get('isadmin', False))
-            st.session_state.role = rec.get('role', 'usuario')
-            st.session_state.mustchange = rec.get('mustchange', False)
-            flash_message('success', f"Bem-vindo, {user}!")
-            st.experimental_rerun()
-    render_flashes()
-
-def force_change_password_ui(username: str):
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown('<div class="section-title">Definir nova senha</div>', unsafe_allow_html=True)
-    p1 = st.text_input("Nova senha", type="password")
-    p2 = st.text_input("Confirmar nova senha", type="password")
-    if st.button("Salvar nova senha"):
-        if len(p1) < 4:
-            banner_warn("Use ao menos 4 caracteres.")
-        elif p1 != p2:
-            banner_error("As senhas não conferem.")
-        else:
-            rec = user_get(username) or {}
-            rec['password'] = hash_password_simple(p1)
-            rec['mustchange'] = False
-            user_set(username, rec)
-            log_event("password_changed", username=username)
-            flash_success("Senha atualizada! Faça login novamente se necessário.")
-            st.session_state['mustchange'] = False
-            st.experimental_rerun()
-            st.stop()  # PARA execução imediatamente após rerun
-    st.markdown('</div>', unsafe_allow_html=True)
-    render_flashes()
-
-# -- MAIN APP --
-
-def main():
-    init_session_state()
-
-    if not st.session_state.loggedin:
-        login_ui()
-        st.stop()
-
-    if st.session_state.mustchange:
-        force_change_password_ui(st.session_state.username)
-        st.stop()
-
-    st.sidebar.title("Menu")
-    st.sidebar.write(f"Olá, {st.session_state.username} - {st.session_state.role.capitalize()}")
-
-    if st.sidebar.button("Sair"):
-        st.session_state.loggedin = False
-        flash_message('info', "Sessão encerrada.")
-        st.experimental_rerun()
-
-    st.write("Conteúdo principal do sistema aqui...")
-
-if __name__ == "__main__":
-    main()
-    # =============================================================================
-# Permissões
+# =============================================================================
+# PermissÃµes
 # =============================================================================
 DEFAULT_PERMS = {
     "roles": {
@@ -267,7 +268,7 @@ def require_perm(perm: str):
             u = st.session_state.get("username") or ""
             r = st.session_state.get("role") or "usuario"
             if not has_perm(u, r, perm):
-                banner("error", "Você não possui autorização para acessar este recurso.")
+                banner("error", "VocÃª nÃ£o possui autorizaÃ§Ã£o para acessar este recurso.")
                 log_event("perm_denied", {"perm": perm, "role": r}, level="WARN")
                 st.stop()
             return func(*args, **kwargs)
@@ -275,7 +276,7 @@ def require_perm(perm: str):
     return _wrap
 
 # =============================================================================
-# CSS — Windows 11 / Fluent (com acentos laranja)
+# CSS â€” Windows 11 / Fluent (com acentos laranja)
 # =============================================================================
 def _inject_css(theme: str | None = None):
     mode = (theme or st.session_state.get("theme_mode") or "Claro").strip().lower()
@@ -289,7 +290,7 @@ def _inject_css(theme: str | None = None):
         HB_MUTED   = "#475069"
         HB_GLASS   = "rgba(0,0,0,.04)"
     else:
-        # Paleta Escura (padrão anterior)
+        # Paleta Escura (padrÃ£o anterior)
         HB_BG      = "#0f1116"
         HB_CARD    = "#141821"
         HB_BORDER  = "#2a3142"
@@ -416,7 +417,7 @@ _inject_css()
 # =============================================================================
 def banner(kind: str, text: str, button: dict | None = None):
     kind = (kind or "info").lower()
-    icon = {"success":"✅", "error":"⛔", "warn":"⚠️", "info":"ℹ️"}.get(kind, "ℹ️")
+    icon = {"success":"âœ…", "error":"â›”", "warn":"âš ï¸", "info":"â„¹ï¸"}.get(kind, "â„¹ï¸")
     c = st.container()
     with c:
         st.markdown(
@@ -434,9 +435,9 @@ def banner(kind: str, text: str, button: dict | None = None):
                 use_container_width=True,
             )
 
-# ----- CORREÇÃO AQUI -----
+# ----- CORREÃ‡ÃƒO AQUI -----
 def flash(kind: str, text: str, button: dict | None = None):
-    """Empilha mensagens para renderização posterior por flash_render()."""
+    """Empilha mensagens para renderizaÃ§Ã£o posterior por flash_render()."""
     ss = st.session_state
     ss.setdefault("_flash", [])
     ss["_flash"].append({"k": (kind or "info"), "t": text or "", "b": button})
@@ -454,7 +455,7 @@ def flash_render(clear: bool = True):
 # =============================================================================
 def _render_header():
     st.markdown("<div class='hb-topbar'></div>", unsafe_allow_html=True)
-    st.markdown(f"<div class='card' style='padding:.8rem 1rem;'><b>🏗️ {SYSTEM_NAME}</b></div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='card' style='padding:.8rem 1rem;'><b>ðŸ—ï¸ {SYSTEM_NAME}</b></div>", unsafe_allow_html=True)
 
 # =============================================================================
 # Login UI
@@ -464,14 +465,14 @@ def _recover_admin():
     db = _bootstrap_admin(db)
     _save_users(db)
     log_event("admin_recovered", {"where": str(USERS_DB)})
-    flash("success", "Admin resetado para <b>admin / 1234</b> (troca obrigatória).")
+    flash("success", "Admin resetado para <b>admin / 1234</b> (troca obrigatÃ³ria).")
 
 def _auth_login_ui():
     st.markdown("<div class='card'>", unsafe_allow_html=True)
-    st.markdown("<div class='section-title'>🔐 Entrar</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-title'>ðŸ” Entrar</div>", unsafe_allow_html=True)
     c1,c2,c3 = st.columns([1.3,1.3,0.7])
     with c1:
-        user = st.text_input("Usuário", key="login_user", label_visibility="collapsed", placeholder="Usuário")
+        user = st.text_input("UsuÃ¡rio", key="login_user", label_visibility="collapsed", placeholder="UsuÃ¡rio")
     with c2:
         pwd = st.text_input("Senha", key="login_pass", type="password",
                             label_visibility="collapsed", placeholder="Senha")
@@ -480,7 +481,7 @@ def _auth_login_ui():
         if st.button("Acessar", use_container_width=True, key="btn_login"):
             rec = user_get((user or "").strip())
             if not rec or not rec.get("active", True):
-                flash("error", "Usuário inexistente ou inativo.")
+                flash("error", "UsuÃ¡rio inexistente ou inativo.")
                 log_event("login_fail", {"username": user, "reason": "not_found_or_inactive"}, level="WARN")
             elif not _verify_password_simple(pwd, rec.get("password","")):
                 flash("error", "Senha incorreta.")
@@ -496,31 +497,31 @@ def _auth_login_ui():
                 flash("success", f"Bem-vindo, <b>{s['username']}</b>!")
                 _rerun()
 
-    st.caption("Primeiro acesso: <b>admin / 1234</b> (será exigida troca de senha).")
+    st.caption("Primeiro acesso: <b>admin / 1234</b> (serÃ¡ exigida troca de senha).")
     rec1, rec2 = st.columns([1,1])
     with rec1:
         if st.button("Recuperar acesso (admin)", use_container_width=True):
             _recover_admin(); _rerun()
     with rec2:
-        st.markdown(f"<div class='hb-banner info'>📁 Base local: <code>{PREFS_DIR}</code></div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='hb-banner info'>ðŸ“ Base local: <code>{PREFS_DIR}</code></div>", unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
 def _force_change_password_ui(username: str):
     st.markdown("<div class='card'>", unsafe_allow_html=True)
-    st.markdown("<div class='section-title'>🔑 Definir nova senha</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-title'>ðŸ”‘ Definir nova senha</div>", unsafe_allow_html=True)
     p1 = st.text_input("Nova senha", type="password")
     p2 = st.text_input("Confirmar nova senha", type="password")
     if st.button("Salvar nova senha", use_container_width=True, key="btn_setpwd"):
         if len(p1)<4:
             banner("warn", "Use ao menos 4 caracteres.")
         elif p1!=p2:
-            banner("error", "As senhas não conferem.")
+            banner("error", "As senhas nÃ£o conferem.")
         else:
             rec = user_get(username) or {}
             rec["password"]=_hash_password_simple(p1); rec["must_change"]=False
             user_set(username, rec)
             log_event("password_changed", {"username": username})
-            flash("success", "Senha atualizada! Faça login novamente se necessário.")
+            flash("success", "Senha atualizada! FaÃ§a login novamente se necessÃ¡rio.")
             s["must_change"]=False; _rerun()
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -537,10 +538,10 @@ if s.get("must_change", False):
 
 # Header/topbar
 _render_header()
-nome_login = s.get("username") or load_user_prefs().get("last_user") or "—"
-papel = "Admin" if s.get("is_admin") else s.get("role","usuário").capitalize()
+nome_login = s.get("username") or load_user_prefs().get("last_user") or "â€”"
+papel = "Admin" if s.get("is_admin") else s.get("role","usuÃ¡rio").capitalize()
 st.markdown(
-    f"<div class='card'>👋 Olá, <b>{nome_login}</b> — <span style='opacity:.9'>{papel}</span></div>",
+    f"<div class='card'>ðŸ‘‹ OlÃ¡, <b>{nome_login}</b> â€” <span style='opacity:.9'>{papel}</span></div>",
     unsafe_allow_html=True
 )
 
@@ -556,14 +557,14 @@ with tb3:
     if st.button("Sair", use_container_width=True, key="btn_logout_main"):
         log_event("logout", {"username": s.get("username")})
         s["logged_in"] = False
-        flash("info", "Sessão encerrada.")
+        flash("info", "SessÃ£o encerrada.")
         _rerun()
-        # Após o radio:
+        # ApÃ³s o radio:
 if "theme_prev" not in s:
     s["theme_prev"] = s["theme_mode"]
 
 if s["theme_mode"] != s["theme_prev"]:
-    # persiste preferência
+    # persiste preferÃªncia
     prefs = load_user_prefs()
     prefs["theme_mode"] = s["theme_mode"]
     save_user_prefs(prefs)
@@ -572,28 +573,28 @@ if s["theme_mode"] != s["theme_prev"]:
     _rerun()
 
 # =============================================================================
-# Painel Admin + Autorizações + Auditoria
+# Painel Admin + AutorizaÃ§Ãµes + Auditoria
 # =============================================================================
 CAN_ADMIN      = bool(s.get("is_admin", False))
 ROLE           = s.get("role","usuario")
 CAN_VIEW_AUDIT = CAN_ADMIN or has_perm(s.get("username",""), ROLE, "auditoria_view")
 
 if CAN_ADMIN:
-    with st.expander("👤 Painel de Usuários (Admin)", expanded=False):
-        st.markdown("Cadastre, ative/desative, defina papéis e redefina senhas.")
-        tab1, tab2, tab3 = st.tabs(["Usuários", "Novo usuário", "Autorizações"])
+    with st.expander("ðŸ‘¤ Painel de UsuÃ¡rios (Admin)", expanded=False):
+        st.markdown("Cadastre, ative/desative, defina papÃ©is e redefina senhas.")
+        tab1, tab2, tab3 = st.tabs(["UsuÃ¡rios", "Novo usuÃ¡rio", "AutorizaÃ§Ãµes"])
 
-        # Usuários
+        # UsuÃ¡rios
         with tab1:
             users = user_list()
             if not users:
-                banner("info", "Nenhum usuário cadastrado.")
+                banner("info", "Nenhum usuÃ¡rio cadastrado.")
             else:
                 for u in users:
                     colA,colB,colC,colD,colE,colF = st.columns([2,1.1,1.0,1.4,1.4,2])
                     colA.write(f"**{u['username']}**")
-                    colB.write("👑 Admin" if u.get("is_admin") else u.get("role","usuario").capitalize())
-                    colC.write("✅ Ativo" if u.get("active", True) else "❌ Inativo")
+                    colB.write("ðŸ‘‘ Admin" if u.get("is_admin") else u.get("role","usuario").capitalize())
+                    colC.write("âœ… Ativo" if u.get("active", True) else "âŒ Inativo")
                     colD.write(("Exige troca" if u.get("must_change") else "Senha OK"))
                     with colE:
                         if u["username"] != "admin":
@@ -610,7 +611,7 @@ if CAN_ADMIN:
                                 rec["must_change"] = True
                                 user_set(u["username"], rec)
                                 log_event("user_password_reset", {"user": u["username"]})
-                                flash("success", "Senha redefinida para 1234 (troca obrigatória).")
+                                flash("success", "Senha redefinida para 1234 (troca obrigatÃ³ria).")
                                 _rerun()
                     with colF:
                         if u["username"] != "admin":
@@ -626,15 +627,15 @@ if CAN_ADMIN:
                                 flash("success", "Papel atualizado.")
                                 _rerun()
 
-        # Novo usuário
+        # Novo usuÃ¡rio
         with tab2:
-            new_u = st.text_input("Usuário (login)", key="new_user_login")
+            new_u = st.text_input("UsuÃ¡rio (login)", key="new_user_login")
             new_role = st.selectbox("Papel inicial", ["usuario","gestor","diretoria","admin"], index=0, key="new_user_role")
-            if st.button("Criar usuário", key="btn_new_user"):
+            if st.button("Criar usuÃ¡rio", key="btn_new_user"):
                 if not new_u.strip():
-                    banner("error", "Informe o nome do usuário.")
+                    banner("error", "Informe o nome do usuÃ¡rio.")
                 elif user_exists(new_u.strip()):
-                    banner("warn", "Usuário já existe.")
+                    banner("warn", "UsuÃ¡rio jÃ¡ existe.")
                 else:
                     user_set(new_u.strip(), {
                         "password": _hash_password_simple("1234"),
@@ -642,40 +643,40 @@ if CAN_ADMIN:
                         "role": new_role, "created_at": datetime.now().isoformat(timespec="seconds")
                     })
                     log_event("user_created", {"created_user": new_u.strip(), "role": new_role})
-                    flash("success", "Usuário criado com senha 1234 (troca obrigatória).")
+                    flash("success", "UsuÃ¡rio criado com senha 1234 (troca obrigatÃ³ria).")
                     _rerun()
 
-        # Autorização
+        # AutorizaÃ§Ã£o
         with tab3:
             perms = _load_perms()
-            st.caption("Papel → Permissões (use '*' para todas). Overrides por usuário aceitam prefixo '-' para remover permissão herdada.")
+            st.caption("Papel â†’ PermissÃµes (use '*' para todas). Overrides por usuÃ¡rio aceitam prefixo '-' para remover permissÃ£o herdada.")
             c1, c2 = st.columns(2)
             with c1:
-                st.subheader("Papéis")
+                st.subheader("PapÃ©is")
                 roles = list(perms.get("roles", {}).keys())
                 for role in roles:
                     perms_txt = st.text_area(f"{role}", "\n".join(perms["roles"][role]), height=100, key=f"role_{role}_txt")
                     perms["roles"][role] = [p.strip() for p in perms_txt.splitlines() if p.strip()]
             with c2:
-                st.subheader("Overrides por usuário")
+                st.subheader("Overrides por usuÃ¡rio")
                 ov = perms.get("overrides", {})
                 all_users = [u["username"] for u in user_list()]
-                who = st.selectbox("Usuário", ["(selecione)"] + all_users, index=0)
+                who = st.selectbox("UsuÃ¡rio", ["(selecione)"] + all_users, index=0)
                 if who and who != "(selecione)":
                     cur = ov.get(who, [])
                     ov_txt = st.text_area(f"Overrides de {who}", "\n".join(cur), height=120, key=f"ov_{who}_txt")
                     ov[who] = [p.strip() for p in ov_txt.splitlines() if p.strip()]
                 perms["overrides"] = ov
-            if st.button("💾 Salvar permissões", type="primary", key="btn_save_perms"):
+            if st.button("ðŸ’¾ Salvar permissÃµes", type="primary", key="btn_save_perms"):
                 _save_perms(perms)
                 log_event("perms_updated", {"by": s.get("username")})
-                flash("success", "Permissões atualizadas.")
+                flash("success", "PermissÃµes atualizadas.")
 
 # =============================================================================
 # Auditoria
 # =============================================================================
 if CAN_VIEW_AUDIT:
-    with st.expander("🧾 Auditoria do Sistema (Log de Diretoria)", expanded=False):
+    with st.expander("ðŸ§¾ Auditoria do Sistema (Log de Diretoria)", expanded=False):
         df_log = read_audit_df()
         if df_log.empty:
             banner("info", "Sem eventos de auditoria ainda.")
@@ -683,12 +684,12 @@ if CAN_VIEW_AUDIT:
             c1, c2, c3, c4 = st.columns([1.4, 1.2, 1.2, 1.0])
             with c1:
                 users_opt = ["(Todos)"] + sorted([u for u in df_log["user"].dropna().unique().tolist()])
-                f_user = st.selectbox("Usuário", users_opt, index=0, key="flt_user_aud")
+                f_user = st.selectbox("UsuÃ¡rio", users_opt, index=0, key="flt_user_aud")
             with c2:
-                f_action = st.text_input("Ação contém...", "", key="flt_action_aud")
+                f_action = st.text_input("AÃ§Ã£o contÃ©m...", "", key="flt_action_aud")
             with c3:
                 lv_opts = ["(Todos)", "INFO", "WARN", "ERROR"]
-                f_level = st.selectbox("Nível", lv_opts, index=0, key="flt_level_aud")
+                f_level = st.selectbox("NÃ­vel", lv_opts, index=0, key="flt_level_aud")
             with c4:
                 page_size = st.selectbox("Linhas", [100, 300, 1000], index=1, key="flt_page_aud")
 
@@ -704,7 +705,7 @@ if CAN_VIEW_AUDIT:
             if total > 0:
                 pcols = st.columns([1, 3, 1])
                 with pcols[0]:
-                    page = st.number_input("Página", min_value=1, max_value=max(1, (total - 1) // int(page_size) + 1), value=1, step=1, key="aud_page")
+                    page = st.number_input("PÃ¡gina", min_value=1, max_value=max(1, (total - 1) // int(page_size) + 1), value=1, step=1, key="aud_page")
                 start = (int(page) - 1) * int(page_size)
                 end = start + int(page_size)
                 view = logv.iloc[start:end].copy()
@@ -734,11 +735,11 @@ if CAN_VIEW_AUDIT:
                 )
 
 # =============================================================================
-# DB (SQLite) para OS/Clientes/Obras/Serviços
+# DB (SQLite) para OS/Clientes/Obras/ServiÃ§os
 # =============================================================================
 Base = declarative_base()
 
-# Usuários do DB (futuro)
+# UsuÃ¡rios do DB (futuro)
 class User(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True)
@@ -798,13 +799,13 @@ class Servico(Base):
     ativo = Column(Integer, default=1)
     itens = relationship("OSItem", back_populates="servico", cascade="all, delete")
 
-# >>>>>>>>>>>>>>>>>>>>>>>>> NOVO: Serviços por Obra <<<<<<<<<<<<<<<<<<<<<<<<<
+# >>>>>>>>>>>>>>>>>>>>>>>>> NOVO: ServiÃ§os por Obra <<<<<<<<<<<<<<<<<<<<<<<<<
 class ObraServico(Base):
     __tablename__ = "obra_servicos"
     id = Column(Integer, primary_key=True)
     obra_id = Column(Integer, ForeignKey("obras.id"), nullable=False, index=True)
     servico_id = Column(Integer, ForeignKey("servicos.id"), nullable=False, index=True)
-    preco_unit = Column(Float)   # preço específico para esta obra
+    preco_unit = Column(Float)   # preÃ§o especÃ­fico para esta obra
     ativo = Column(Integer, default=1)
     servico = relationship("Servico")
 
@@ -825,7 +826,7 @@ class OSItem(Base):
     os_id = Column(Integer, ForeignKey("os.id"))
     servico_id = Column(Integer, ForeignKey("servicos.id"))
     quantidade_prevista = Column(Float)
-    # >>> snapshot de preço no momento da emissão:
+    # >>> snapshot de preÃ§o no momento da emissÃ£o:
     preco_unit = Column(Float)
     os = relationship("OS", back_populates="itens")
     servico = relationship("Servico", back_populates="itens")
@@ -844,7 +845,7 @@ engine = create_engine(f"sqlite:///{DB_PATH}", future=True, connect_args={"check
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 Base.metadata.create_all(engine)
 
-# Índices/PRAGMA
+# Ãndices/PRAGMA
 
 def _safe_create_index(conn, idx_name: str, table: str, cols: str):
     try:
@@ -1014,7 +1015,7 @@ _ensure_obra_servicos_schema_and_indexes(engine)
 # =============================================================================
 # Helpers
 # =============================================================================
-STATUS_OPTIONS = ["Aberta", "Em Execução", "Medido em Aberto", "Medido", "Concluída", "Cancelada"]
+STATUS_OPTIONS = ["Aberta", "Em ExecuÃ§Ã£o", "Medido em Aberto", "Medido", "ConcluÃ­da", "Cancelada"]
 
 def to_df(sess: Session, table) -> pd.DataFrame:
     rows = sess.execute(select(table)).scalars().all()
@@ -1059,7 +1060,7 @@ _VALID_KINDS = {"cnpj", "proposta", "contrato"}
 def _save_anexo(uploaded_file, obra_id: int, kind: str) -> str | None:
     if uploaded_file is None: return None
     kind = (kind or "").lower().strip()
-    if kind not in _VALID_KINDS: raise ValueError(f"Tipo de anexo inválido: {kind}")
+    if kind not in _VALID_KINDS: raise ValueError(f"Tipo de anexo invÃ¡lido: {kind}")
     ext = Path(uploaded_file.name or f"{kind}.bin").suffix.lower() or ".bin"
     obra_dir = ANEXOS_DIR / f"obra_{int(obra_id)}"; obra_dir.mkdir(parents=True, exist_ok=True)
     tmp_path = obra_dir / f"{kind}_tmp{ext}"
@@ -1087,7 +1088,7 @@ def _abs_ok(path_str: str | None) -> tuple[bool, str]:
     return (p.exists() and p.is_file(), p.name)
 
 # =============================================================================
-# PDFs (OS, Medição, Fechamento)
+# PDFs (OS, MediÃ§Ã£o, Fechamento)
 # =============================================================================
 styles = getSampleStyleSheet()
 styleN = styles["BodyText"]
@@ -1097,7 +1098,7 @@ HB_ORANGE = colors.HexColor("#FF7A00")
 FORM_CODE = "FORM.H.012.00"
 
 def _header_vertical_centralizado() -> list:
-    p1 = Paragraph("<b>Habisolute Engenharia e Controle Tecnológico</b>",
+    p1 = Paragraph("<b>Habisolute Engenharia e Controle TecnolÃ³gico</b>",
                    ParagraphStyle("hdr1", parent=styleN, fontSize=11, leading=13, alignment=TA_CENTER))
     p2 = Paragraph("contato@habisoluteengenharia.com.br",
                    ParagraphStyle("hdr2", parent=styleN, fontSize=9, leading=11, alignment=TA_CENTER))
@@ -1123,7 +1124,7 @@ def _on_page(canvas, doc, _titulo_meta: str = ""):
     canvas.setFillColor(HB_ORANGE); canvas.setStrokeColor(HB_ORANGE)
     canvas.rect(0, footer_y + 10, w, 2, fill=1, stroke=0)
     pagina = canvas.getPageNumber(); agora = datetime.now().strftime("%d/%m/%Y %H:%M")
-    meta_txt = f"Habisolute Engenharia e Controle Tecnológico — {FORM_CODE}  {agora}  pág. {pagina}"
+    meta_txt = f"Habisolute Engenharia e Controle TecnolÃ³gico â€” {FORM_CODE}  {agora}  pÃ¡g. {pagina}"
     canvas.setFont("Helvetica", 8.5); canvas.setFillColor(black)
     text_width = canvas.stringWidth(meta_txt, "Helvetica", 8.5)
     canvas.drawString((w - text_width)/2.0, footer_y, meta_txt)
@@ -1141,7 +1142,7 @@ def gerar_pdf_os(os_row, obra_row, itens: list[dict], show_prices: bool, logo_by
     info_tbl = Table([
         [Paragraph(f"<b>Status:</b> {os_row.status}", styleSmall)],
         [Paragraph(f"<b>Obra:</b> {obra_row.nome}", styleSmall)],
-        [Paragraph(f"<b>Endereço:</b> {obra_row.endereco}", styleSmall)],
+        [Paragraph(f"<b>EndereÃ§o:</b> {obra_row.endereco}", styleSmall)],
         [Paragraph(f"<b>Cliente:</b> {cli.nome if cli else (obra_row.cliente or '-')}", styleSmall)],
     ], colWidths=[doc.width])
     info_tbl.setStyle(TableStyle([
@@ -1151,7 +1152,7 @@ def gerar_pdf_os(os_row, obra_row, itens: list[dict], show_prices: bool, logo_by
     ]))
     story += [info_tbl, Spacer(1, 6)]
 
-    titulo_os = f"ORDEM DE SERVIÇO Nº {os_row.numero}    DATA: {os_row.data_emissao.strftime('%d/%m/%Y')}"
+    titulo_os = f"ORDEM DE SERVIÃ‡O NÂº {os_row.numero}    DATA: {os_row.data_emissao.strftime('%d/%m/%Y')}"
     tit_tbl = Table([[Paragraph(
         f"<b>{titulo_os}</b>",
         ParagraphStyle('titOS', parent=styleN, fontSize=11, leading=13, alignment=TA_CENTER)
@@ -1165,9 +1166,9 @@ def gerar_pdf_os(os_row, obra_row, itens: list[dict], show_prices: bool, logo_by
     ]))
     story += [tit_tbl, Spacer(1, 8)]
 
-    headers = ["Código", "Descrição", "Un", "Qtd"]
+    headers = ["CÃ³digo", "DescriÃ§Ã£o", "Un", "Qtd"]
     if show_prices:
-        headers += ["Preço Unit", "Sub Total"]
+        headers += ["PreÃ§o Unit", "Sub Total"]
     data_rows = [headers]
 
     for it in itens:
@@ -1243,7 +1244,7 @@ def gerar_pdf_medicao(obra_nome: str, periodo_str: str, linhas: list[dict], logo
     story += _header_vertical_centralizado()
 
     info_tbl = Table([[Paragraph(f"<b>Obra:</b> {obra_nome}", styleSmall)],
-                      [Paragraph(f"<b>Período:</b> {periodo_str}", styleSmall)]], colWidths=[doc.width])
+                      [Paragraph(f"<b>PerÃ­odo:</b> {periodo_str}", styleSmall)]], colWidths=[doc.width])
     info_tbl.setStyle(TableStyle([
         ("ALIGN",(0,0),(-1,-1),"CENTER"), ("VALIGN",(0,0),(-1,-1),"MIDDLE"),
         ("TOPPADDING",(0,0),(-1,-1),0), ("BOTTOMPADDING",(0,0),(-1,-1),2),
@@ -1251,7 +1252,7 @@ def gerar_pdf_medicao(obra_nome: str, periodo_str: str, linhas: list[dict], logo
     ]))
     story += [info_tbl, Spacer(1, 6)]
 
-    titulo = f"RELATÓRIO DE MEDIÇÃO — Medição nº {medicao_num}"
+    titulo = f"RELATÃ“RIO DE MEDIÃ‡ÃƒO â€” MediÃ§Ã£o nÂº {medicao_num}"
     tit_tbl = Table([[Paragraph(f"<b>{titulo}</b>", ParagraphStyle(
         "titMED", parent=styleN, fontSize=11, leading=13, alignment=TA_CENTER))]], colWidths=[doc.width])
     tit_tbl.setStyle(TableStyle([
@@ -1263,7 +1264,7 @@ def gerar_pdf_medicao(obra_nome: str, periodo_str: str, linhas: list[dict], logo
     ]))
     story += [tit_tbl, Spacer(1, 8)]
 
-    headers = ["Data", "OS", "Código", "Descrição", "Un", "Qtd", "Preço", "Subtotal"]
+    headers = ["Data", "OS", "CÃ³digo", "DescriÃ§Ã£o", "Un", "Qtd", "PreÃ§o", "Subtotal"]
     data_rows = [headers]
     for r in linhas:
         data_rows.append([
@@ -1292,7 +1293,7 @@ def gerar_pdf_medicao(obra_nome: str, periodo_str: str, linhas: list[dict], logo
         acc["val"] += float(r.get("subtotal", 0.0) or 0.0)
 
     story.append(Spacer(1, 10))
-    resumo_title = Table([[Paragraph("<b>RESUMO DO PERÍODO</b>", ParagraphStyle(
+    resumo_title = Table([[Paragraph("<b>RESUMO DO PERÃODO</b>", ParagraphStyle(
         "titRES", parent=styleN, fontSize=10.5, leading=12, alignment=TA_CENTER))]], colWidths=[doc.width])
     resumo_title.setStyle(TableStyle([
         ("BACKGROUND",(0,0),(-1,-1), colors.HexColor("#e6e6e6")), ("TEXTCOLOR",(0,0),(-1,-1), colors.black),
@@ -1300,7 +1301,7 @@ def gerar_pdf_medicao(obra_nome: str, periodo_str: str, linhas: list[dict], logo
     ]))
     story.append(resumo_title)
 
-    res_headers = ["Código", "Descrição", "Un", "Qtd", "Valor Total"]
+    res_headers = ["CÃ³digo", "DescriÃ§Ã£o", "Un", "Qtd", "Valor Total"]
     res_rows = [res_headers]
     for (cod, desc, un), acc in sorted(resumo.items(), key=lambda x: (x[0][0], x[0][1])):
         res_rows.append([cod, desc, un, f"{acc['qtd']:.2f}", format_brl(acc['val'])])
@@ -1344,7 +1345,7 @@ def gerar_pdf_fechamento(cliente_nome: str, periodo_str: str, linhas: list[dict]
     story += _header_vertical_centralizado()
 
     info_tbl = Table([[Paragraph(f"<b>Cliente:</b> {cliente_nome}", styleSmall)],
-                      [Paragraph(f"<b>Período:</b> {periodo_str}", styleSmall)]], colWidths=[doc.width])
+                      [Paragraph(f"<b>PerÃ­odo:</b> {periodo_str}", styleSmall)]], colWidths=[doc.width])
     info_tbl.setStyle(TableStyle([
         ("ALIGN",(0,0),(-1,-1),"CENTER"), ("VALIGN",(0,0),(-1,-1),"MIDDLE"),
         ("TOPPADDING",(0,0),(-1,-1),0), ("BOTTOMPADDING",(0,0),(-1,-1),2),
@@ -1369,7 +1370,7 @@ def gerar_pdf_fechamento(cliente_nome: str, periodo_str: str, linhas: list[dict]
         acc["qtd"] += float(r.get("qtd", 0.0) or 0.0)
         acc["val"] += float(r.get("subtotal", 0.0) or 0.0)
 
-    headers = ["Obra", "Código", "Descrição", "Un", "Qtd", "Subtotal"]
+    headers = ["Obra", "CÃ³digo", "DescriÃ§Ã£o", "Un", "Qtd", "Subtotal"]
     rows = [headers]; total = 0.0
     for (obra, cod, desc, un), acc in sorted(agreg.items(), key=lambda x: (x[0][0], x[0][1])):
         rows.append([obra, cod, desc, un, f"{acc['qtd']:.2f}", format_brl(acc["val"])])
@@ -1405,7 +1406,7 @@ def gerar_pdf_fechamento(cliente_nome: str, periodo_str: str, linhas: list[dict]
               onLaterPages=lambda c, d: _on_page(c, d, titulo))
     return buf.getvalue()
 
-# ===================== PÁGINAS: Cadastros =====================
+# ===================== PÃGINAS: Cadastros =====================
 @require_perm("relatorios_export")
 def page_clientes():
     st.markdown('<div class="section-title">Cadastro de Clientes</div>', unsafe_allow_html=True)
@@ -1415,10 +1416,10 @@ def page_clientes():
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown("#### Novo Cliente")
         nome = st.text_input("Nome do Cliente *", key="cli_new_nome")
-        documento = st.text_input("Documento (CNPJ/CPF) — opcional", key="cli_new_doc")
-        contato = st.text_input("Contato — opcional", key="cli_new_contato")
-        email = st.text_input("E-mail — opcional", key="cli_new_email")
-        telefone = st.text_input("Telefone — opcional", key="cli_new_tel")
+        documento = st.text_input("Documento (CNPJ/CPF) â€” opcional", key="cli_new_doc")
+        contato = st.text_input("Contato â€” opcional", key="cli_new_contato")
+        email = st.text_input("E-mail â€” opcional", key="cli_new_email")
+        telefone = st.text_input("Telefone â€” opcional", key="cli_new_tel")
         ativo = st.checkbox("Ativo", value=True, key="cli_new_ativo")
 
         if st.button("Cadastrar Cliente", use_container_width=True, key="btn_cli_add"):
@@ -1428,7 +1429,7 @@ def page_clientes():
                 with SessionLocal() as sess:
                     ja = sess.execute(select(Cliente).where(Cliente.nome == nome.strip())).scalars().first()
                     if ja:
-                        banner("warn", "Já existe cliente com esse nome.")
+                        banner("warn", "JÃ¡ existe cliente com esse nome.")
                     else:
                         sess.add(Cliente(
                             nome=nome.strip(), documento=(documento or None),
@@ -1486,10 +1487,10 @@ def page_clientes():
                 novo_motivo = col_b2.text_input("Motivo (opcional)", value=c.bloqueado_motivo or "", key=f"cli_edit_bloqmot_{c.id}")
 
                 bcol1, bcol2 = st.columns([1, 1])
-                if bcol1.button("Salvar alterações", use_container_width=True, key=f"cli_save_{c.id}"):
+                if bcol1.button("Salvar alteraÃ§Ãµes", use_container_width=True, key=f"cli_save_{c.id}"):
                     dup = sess.execute(select(Cliente).where(Cliente.nome == c.nome, Cliente.id != c.id)).scalars().first()
                     if dup:
-                        banner("error", "Já existe outro cliente com esse nome.")
+                        banner("error", "JÃ¡ existe outro cliente com esse nome.")
                     else:
                         if novo_bloq and not bloqueado_atual:
                             c.bloqueado = 1; c.bloqueado_desde = date.today(); c.bloqueado_motivo = (novo_motivo or "Bloqueado")
@@ -1504,12 +1505,12 @@ def page_clientes():
                         (Obra.cliente_id == c.id) | (func.trim(func.coalesce(Obra.cliente, "")) == c.nome)
                     ).count()
                 if obras_vinc > 0:
-                    bcol2.button("Excluir (bloqueado — possui obras)", disabled=True, use_container_width=True, key=f"cli_del_btn_{c.id}")
+                    bcol2.button("Excluir (bloqueado â€” possui obras)", disabled=True, use_container_width=True, key=f"cli_del_btn_{c.id}")
                     banner("warn", f"Este cliente possui {obras_vinc} obra(s) vinculada(s).")
                 else:
-                    conf = st.checkbox("Confirmo a exclusão deste cliente", key=f"cli_del_conf_{c.id}")
+                    conf = st.checkbox("Confirmo a exclusÃ£o deste cliente", key=f"cli_del_conf_{c.id}")
                     if bcol2.button("Excluir cliente", use_container_width=True, disabled=not conf, key=f"cli_del_{c.id}"):
-                        sess.delete(c); sess.commit(); flash("success", "Cliente excluído."); _rerun()
+                        sess.delete(c); sess.commit(); flash("success", "Cliente excluÃ­do."); _rerun()
         st.markdown('</div>', unsafe_allow_html=True)
 
 @require_perm("relatorios_export")
@@ -1524,4 +1525,4 @@ def page_obras():
             clientes = (sess.execute(select(Cliente).where(Cliente.ativo == 1).order_by(Cliente.nome.asc()))
                         .scalars().all())
         nome = st.text_input("Nome da Obra *", key="obra_new_nome")
-
+    
