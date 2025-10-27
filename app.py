@@ -222,8 +222,8 @@ def user_delete(username: str) -> None:
 # =============================================================================
 DEFAULT_PERMS = {
     "roles": {
-        "usuario":   ["dashboard_view"],
-        "gestor":    ["dashboard_view","os_create","os_edit","os_view"],
+        "usuario":   ["dashboard_view", "relatorios_export"],  # se quiser liberar também para usuario
+        "gestor":    ["dashboard_view","os_create","os_edit","os_view","relatorios_export"],
         "diretoria": ["dashboard_view","os_view","auditoria_view","relatorios_export"],
         "admin":     ["*"]
     },
@@ -435,7 +435,7 @@ def banner(kind: str, text: str, button: dict | None = None):
                 use_container_width=True,
             )
 
-def flash(kind: str, text: str, button: dict | None = None):
+ddef flash(kind: str, text: str, button: dict | None = None):
     q = st.session_state.get("_flash", [])
     q.append({"k": (kind or "info"), "t": text or "", "b": button})
     st.session_state["_flash"] = q
@@ -1391,19 +1391,11 @@ def gerar_pdf_fechamento(cliente_nome: str, periodo_str: str, linhas: list[dict]
 
 # ===================== PÁGINAS: Cadastros =====================
 @require_perm("relatorios_export")
-def page_export():
-    st.markdown('<div class="section-title">Exportações</div>', unsafe_allow_html=True)
-    with st.expander("Backup (DB + anexos)", expanded=False):
-        if st.button("Gerar backup ZIP", key="btn_backup_zip"):
-            p = make_full_backup()
-            st.download_button(
-                "Baixar backup",
-                data=p.read_bytes(),
-                file_name=p.name,
-                mime="application/zip",
-                key="dl_backup_zip"
-            )
+def page_clientes():
+    st.markdown('<div class="section-title">Cadastro de Clientes</div>', unsafe_allow_html=True)
+    col_new, col_list = st.columns([1, 2])
 
+    # ---- Novo cliente ----
     with col_new:
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown("#### Novo Cliente")
@@ -1431,6 +1423,79 @@ def page_export():
                         sess.commit()
                         flash("success", "Cliente cadastrado.")
                         _rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    # ---- Listar / editar ----
+    with col_list:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.markdown("#### Clientes")
+        with SessionLocal() as sess:
+            clientes = sess.execute(select(Cliente).order_by(Cliente.nome.asc())).scalars().all()
+
+        if not clientes:
+            banner("info", "Nenhum cliente ainda.")
+            st.markdown('</div>', unsafe_allow_html=True)
+            return
+
+        df = pd.DataFrame([{
+            "id": c.id, "nome": c.nome, "documento": c.documento, "contato": c.contato,
+            "email": c.email, "telefone": c.telefone, "ativo": c.ativo,
+            "bloqueado": c.bloqueado, "motivo": c.bloqueado_motivo, "desde": c.bloqueado_desde
+        } for c in clientes])
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+        st.markdown("##### Editar / Excluir")
+        cli_sel = st.selectbox(
+            "Selecione um cliente",
+            options=clientes,
+            format_func=lambda c: f"{c.nome} (ID {c.id})",
+            key="cli_edit_sel"
+        )
+        if cli_sel:
+            with SessionLocal() as sess:
+                c = sess.get(Cliente, cli_sel.id)
+
+                e1, e2 = st.columns(2)
+                with e1:
+                    c.nome = st.text_input("Nome", value=c.nome or "", key=f"cli_edit_nome_{c.id}")
+                    c.documento = st.text_input("Documento", value=c.documento or "", key=f"cli_edit_doc_{c.id}")
+                    c.contato = st.text_input("Contato", value=c.contato or "", key=f"cli_edit_ctt_{c.id}")
+                with e2:
+                    c.email = st.text_input("E-mail", value=c.email or "", key=f"cli_edit_email_{c.id}")
+                    c.telefone = st.text_input("Telefone", value=c.telefone or "", key=f"cli_edit_tel_{c.id}")
+                    c.ativo = 1 if st.checkbox("Ativo", value=bool(c.ativo), key=f"cli_edit_ativo_{c.id}") else 0
+
+                st.markdown("##### Bloqueio do cliente")
+                col_b1, col_b2 = st.columns([1, 2])
+                bloqueado_atual = bool(c.bloqueado)
+                novo_bloq = col_b1.checkbox("Cliente bloqueado", value=bloqueado_atual, key=f"cli_edit_bloq_{c.id}")
+                novo_motivo = col_b2.text_input("Motivo (opcional)", value=c.bloqueado_motivo or "", key=f"cli_edit_bloqmot_{c.id}")
+
+                bcol1, bcol2 = st.columns([1, 1])
+                if bcol1.button("Salvar alterações", use_container_width=True, key=f"cli_save_{c.id}"):
+                    dup = sess.execute(select(Cliente).where(Cliente.nome == c.nome, Cliente.id != c.id)).scalars().first()
+                    if dup:
+                        banner("error", "Já existe outro cliente com esse nome.")
+                    else:
+                        if novo_bloq and not bloqueado_atual:
+                            c.bloqueado = 1; c.bloqueado_desde = date.today(); c.bloqueado_motivo = (novo_motivo or "Bloqueado")
+                        elif not novo_bloq and bloqueado_atual:
+                            c.bloqueado = 0; c.bloqueado_desde = None; c.bloqueado_motivo = None
+                        else:
+                            c.bloqueado_motivo = (novo_motivo or None)
+                        sess.commit(); flash("success", "Cliente atualizado."); _rerun()
+
+                with SessionLocal() as s2:
+                    obras_vinc = s2.query(Obra).filter(
+                        (Obra.cliente_id == c.id) | (func.trim(func.coalesce(Obra.cliente, "")) == c.nome)
+                    ).count()
+                if obras_vinc > 0:
+                    bcol2.button("Excluir (bloqueado — possui obras)", disabled=True, use_container_width=True, key=f"cli_del_btn_{c.id}")
+                    banner("warn", f"Este cliente possui {obras_vinc} obra(s) vinculada(s).")
+                else:
+                    conf = st.checkbox("Confirmo a exclusão deste cliente", key=f"cli_del_conf_{c.id}")
+                    if bcol2.button("Excluir cliente", use_container_width=True, disabled=not conf, key=f"cli_del_{c.id}"):
+                        sess.delete(c); sess.commit(); flash("success", "Cliente excluído."); _rerun()
         st.markdown('</div>', unsafe_allow_html=True)
 
     with col_list:
@@ -2259,8 +2324,12 @@ def page_relatorios():
     hoje = date.today()
     primeiro_dia = date(hoje.year, hoje.month, 1)
     ultimo_dia = date(hoje.year, hoje.month, calendar.monthrange(hoje.year, hoje.month)[1])
-    periodo = st.date_input("Período", value=(primeiro_dia, ultimo_dia), key="rel_periodo")
-    ini, fim = (periodo if isinstance(periodo, (list, tuple)) and len(periodo) == 2 else (periodo, periodo))
+    periodo = st.date_input(
+    "Período",
+    value=(ini_default, fim_default),
+    key="print_periodo"
+)
+ini, fim = (periodo if isinstance(periodo, (list, tuple)) and len(periodo) == 2 else (periodo, periodo))
 
     status_opt = ["(Todos)"] + STATUS_OPTIONS
     status_filtro = st.selectbox("Filtrar por status das OS", status_opt, index=0, key="rel_status")
