@@ -9,6 +9,27 @@ from typing import Optional, Dict
 from typing import Optional, Tuple, List, Dict, Any
 
 import streamlit as st
+from pathlib import Path
+# outras importações...
+
+SYSTEM_NAME = "Habisolute — Sistema de OS"
+SYSTEM_CODE = "hab_os"
+BRAND_COLOR = "#f97316"  # COR LARANJA BASE
+
+def _inject_css(theme: str | None = None):
+    # definição das cores base dependendo do tema...
+    st.markdown(f"""
+    <style>
+    :root {{
+      --hb-accent: {BRAND_COLOR};
+      /* outras variáveis CSS */
+    }}
+    </style>
+    """, unsafe_allow_html=True)
+
+# ... restante do código ...
+
+_inject_css()
 
 # Paths
 BASEDIR = Path(__file__).resolve().parent
