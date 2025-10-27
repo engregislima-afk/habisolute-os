@@ -218,64 +218,6 @@ def user_delete(username: str) -> None:
         db["users"].pop(username, None); _save_users(db)
 
 # =============================================================================
-# Permissões
-# =============================================================================
-DEFAULT_PERMS = {
-    "roles": {
-        "usuario":   ["dashboard_view"],
-        "gestor":    ["dashboard_view","os_create","os_edit","os_view","relatorios_export"],
-        "diretoria": ["dashboard_view","os_view","auditoria_view","relatorios_export"],
-        "admin":     ["*"]
-    },
-    "overrides": {}
-}
-
-def _load_perms() -> Dict[str, Any]:
-    if PERMS_DB.exists():
-        try:
-            data = json.loads(PERMS_DB.read_text(encoding="utf-8"))
-            for k,v in DEFAULT_PERMS.items():
-                data.setdefault(k, v)
-            return data
-        except Exception:
-            pass
-    PERMS_DB.write_text(json.dumps(DEFAULT_PERMS, ensure_ascii=False, indent=2), encoding="utf-8")
-    return json.loads(PERMS_DB.read_text(encoding="utf-8"))
-
-def _save_perms(data: Dict[str, Any]) -> None:
-    tmp = PERMS_DB.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"); tmp.replace(PERMS_DB)
-
-def user_permissions(username: str, role: str) -> List[str]:
-    perms = _load_perms()
-    allowed = set(perms.get("roles", {}).get(role or "usuario", []))
-    for item in perms.get("overrides", {}).get(username, []):
-        item = str(item).strip()
-        if not item: continue
-        if item.startswith("-"):
-            allowed.discard(item[1:])
-        else:
-            allowed.add(item)
-    return sorted(allowed)
-
-def has_perm(username: str, role: str, perm: str) -> bool:
-    ps = user_permissions(username, role)
-    return ("*" in ps) or (perm in ps)
-
-def require_perm(perm: str):
-    def _wrap(func):
-        def _inner(*args, **kwargs):
-            u = st.session_state.get("username") or ""
-            r = st.session_state.get("role") or "usuario"
-            if not has_perm(u, r, perm):
-                banner("error", "Você não possui autorização para acessar este recurso.")
-                log_event("perm_denied", {"perm": perm, "role": r}, level="WARN")
-                st.stop()
-            return func(*args, **kwargs)
-        return _inner
-    return _wrap
-
-# =============================================================================
 # CSS — Windows 11 / Fluent (com acentos laranja)
 # =============================================================================
 def _inject_css(theme: str | None = None):
@@ -489,99 +431,6 @@ if s["theme_mode"] != s["theme_prev"]:
 CAN_ADMIN = False
 ROLE           = s.get("role","usuario")
 CAN_VIEW_AUDIT = True
-
-if False:  # Admin panel disabled
-    with st.expander("👤 Painel de Usuários (Admin)", expanded=False):
-        st.markdown("Cadastre, ative/desative, defina papéis e redefina senhas.")
-        tab1, tab2 = st.tabs(["Usuários (desativado)", "Novo usuário (desativado)"])
-
-        # Usuários
-        with tab1:
-            users = user_list()
-            if not users:
-                banner("info", "Nenhum usuário cadastrado.")
-            else:
-                for u in users:
-                    colA,colB,colC,colD,colE,colF = st.columns([2,1.1,1.0,1.4,1.4,2])
-                    colA.write(f"**{u['username']}**")
-                    colB.write("👑 Admin" if u.get("is_admin") else u.get("role","usuario").capitalize())
-                    colC.write("✅ Ativo" if u.get("active", True) else "❌ Inativo")
-                    colD.write(("Exige troca" if u.get("must_change") else "Senha OK"))
-                    with colE:
-                        if u["username"] != "admin":
-                            if st.button(("Desativar" if u.get("active", True) else "Reativar"), key=f"act_{u['username']}"):
-                                rec = user_get(u["username"]) or {}
-                                rec["active"] = not rec.get("active", True)
-                                user_set(u["username"], rec)
-                                log_event("user_status_toggle", {"user": u["username"], "active": rec["active"]})
-                                flash("success", "Status atualizado.")
-                                _rerun()
-                            if st.button("Redefinir", key=f"rst_{u['username']}"):
-                                rec = user_get(u["username"]) or {}
-                                rec["password"] = _hash_password_simple("1234")
-                                rec["must_change"] = True
-                                user_set(u["username"], rec)
-                                log_event("user_password_reset", {"user": u["username"]})
-                                flash("success", "Senha redefinida para 1234 (troca obrigatória).")
-                                _rerun()
-                    with colF:
-                        if u["username"] != "admin":
-                            new_role = st.selectbox("Papel", ["usuario","gestor","diretoria","admin"],
-                                                    index=["usuario","gestor","diretoria","admin"].index(u.get("role","usuario")),
-                                                    key=f"role_{u['username']}")
-                            if st.button("Salvar papel", key=f"save_role_{u['username']}"):
-                                rec = user_get(u["username"]) or {}
-                                rec["role"] = new_role
-                                rec["is_admin"] = (new_role == "admin")
-                                user_set(u["username"], rec)
-                                log_event("user_role_changed", {"user": u["username"], "role": new_role})
-                                flash("success", "Papel atualizado.")
-                                _rerun()
-
-        # Novo usuário
-        with tab2:
-            new_u = st.text_input("Usuário (login)", key="new_user_login")
-            new_role = st.selectbox("Papel inicial", ["usuario","gestor","diretoria","admin"], index=0, key="new_user_role")
-            if st.button("Criar usuário", key="btn_new_user"):
-                if not new_u.strip():
-                    banner("error", "Informe o nome do usuário.")
-                elif user_exists(new_u.strip()):
-                    banner("warn", "Usuário já existe.")
-                else:
-                    user_set(new_u.strip(), {
-                        "password": _hash_password_simple("1234"),
-                        "is_admin": (new_role == "admin"), "active": True, "must_change": True,
-                        "role": new_role, "created_at": datetime.now().isoformat(timespec="seconds")
-                    })
-                    log_event("user_created", {"created_user": new_u.strip(), "role": new_role})
-                    flash("success", "Usuário criado com senha 1234 (troca obrigatória).")
-                    _rerun()
-
-        # Autorização
-        with tab3:
-            perms = _load_perms()
-            st.caption("Papel → Permissões (use '*' para todas). Overrides por usuário aceitam prefixo '-' para remover permissão herdada.")
-            c1, c2 = st.columns(2)
-            with c1:
-                st.subheader("Papéis")
-                roles = list(perms.get("roles", {}).keys())
-                for role in roles:
-                    perms_txt = st.text_area(f"{role}", "\n".join(perms["roles"][role]), height=100, key=f"role_{role}_txt")
-                    perms["roles"][role] = [p.strip() for p in perms_txt.splitlines() if p.strip()]
-            with c2:
-                st.subheader("Overrides por usuário")
-                ov = perms.get("overrides", {})
-                all_users = [u["username"] for u in user_list()]
-                who = st.selectbox("Usuário", ["(selecione)"] + all_users, index=0)
-                if who and who != "(selecione)":
-                    cur = ov.get(who, [])
-                    ov_txt = st.text_area(f"Overrides de {who}", "\n".join(cur), height=120, key=f"ov_{who}_txt")
-                    ov[who] = [p.strip() for p in ov_txt.splitlines() if p.strip()]
-                perms["overrides"] = ov
-            if st.button("💾 Salvar permissões", type="primary", key="btn_save_perms"):
-                _save_perms(perms)
-                log_event("perms_updated", {"by": s.get("username")})
-                flash("success", "Permissões atualizadas.")
 
 # =============================================================================
 # Auditoria
@@ -1162,7 +1011,6 @@ def gerar_pdf_fechamento(cliente_nome: str, periodo_str: str, linhas: list[dict]
     return buf.getvalue()
 
 # ===================== PÁGINAS CADASTROS =====================
-@require_perm("relatorios_export")
 def page_clientes():
     st.markdown('<div class="section-title">Cadastro de Clientes</div>', unsafe_allow_html=True)
     col_new, col_list = st.columns([1, 2])
@@ -1241,7 +1089,6 @@ def page_clientes():
                         sess.delete(c); sess.commit(); flash("success", "Cliente excluído."); _rerun()
         st.markdown('</div>', unsafe_allow_html=True)
 
-@require_perm("relatorios_export")
 def page_obras():
     st.markdown('<div class="section-title">Cadastro de Obras</div>', unsafe_allow_html=True)
     c1, c2 = st.columns([1, 2])
@@ -1379,7 +1226,6 @@ def page_obras():
                                 sess_osv.delete(osv); sess_osv.commit(); flash("success","Vínculo removido."); _rerun()
         st.markdown("</div>", unsafe_allow_html=True)
 
-@require_perm("relatorios_export")
 def page_servicos():
     st.markdown('<div class="section-title">Cadastro de Serviços</div>', unsafe_allow_html=True)
     c1, c2 = st.columns([1, 2])
@@ -1455,7 +1301,6 @@ def obter_os_com_itens(sess: Session, os_id: int):
                       "qtd_prev": it.quantidade_prevista or 0.0, "preco_unit": preco, "subtotal": preco * (it.quantidade_prevista or 0.0)})
     return os_row, obra_row, itens
 
-@require_perm("os_create")
 def page_emitir_os():
     st.markdown('<div class="section-title">Emitir OS</div>', unsafe_allow_html=True)
     flash_render(clear=True)
@@ -1563,7 +1408,6 @@ def page_emitir_os():
     else:
         banner("info", "Adicione itens para gerar a OS.")
 
-@require_perm("os_view")
 def page_visualizar_imprimir():
     st.markdown('<div class="section-title">Visualizar / Imprimir</div>', unsafe_allow_html=True)
     st.markdown('<div class="card">', unsafe_allow_html=True)
@@ -1636,7 +1480,6 @@ def page_visualizar_imprimir():
         st.download_button("Baixar PDF (cliente — sem preços)", data=pdf_cliente, file_name=f"{os_row.numero}_cliente.pdf", mime="application/pdf", key="dl_pdf_cliente")
     st.markdown("</div>", unsafe_allow_html=True)
 
-@require_perm("relatorios_export")
 def page_medicao():
     st.markdown('<div class="section-title">Medição Mensal</div>', unsafe_allow_html=True)
     with SessionLocal() as sess:
@@ -1708,7 +1551,6 @@ def page_medicao():
                         sess.commit()
                     flash("success", f"Todas as OS do período foram marcadas como '{status_aplicar}'."); _rerun()
 
-@require_perm("relatorios_export")
 def page_relatorios():
     st.markdown('<div class="section-title">Relatórios por Cliente</div>', unsafe_allow_html=True)
     with SessionLocal() as sess:
@@ -1773,7 +1615,6 @@ def page_relatorios():
         pdf = gerar_pdf_fechamento(cliente_sel.nome, periodo_texto, linhas, logo_bytes=None)
         st.download_button("Imprimir fechamento (PDF)", data=pdf, file_name=f"fechamento_{cliente_sel.nome}_{ini}_{fim}.pdf", mime="application/pdf", key="dl_pdf_fechamento")
 
-@require_perm("relatorios_export")
 def page_export():
     st.markdown('<div class="section-title">Exportações</div>', unsafe_allow_html=True)
     with st.expander("Backup (DB + anexos)", expanded=False):
