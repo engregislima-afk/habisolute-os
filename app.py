@@ -36,7 +36,7 @@ SYSTEM_NAME = "Habisolute — Sistema de OS"
 SYSTEM_CODE = "hab_os"      # pasta local .hab_os na raiz do projeto
 BRAND_COLOR = "#f97316"     # laranja base
 
-st.set_page_config(page_title=SYSTEM_NAME, layout="wide")
+st.set_page_config(page_title=SYSTEM_NAME, layout="wide", initial_sidebar_state="expanded")
 
 BASE_DIR   = Path(__file__).resolve().parent
 PREFS_DIR  = BASE_DIR / f".{SYSTEM_CODE}"; PREFS_DIR.mkdir(parents=True, exist_ok=True)
