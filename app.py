@@ -645,7 +645,7 @@ def _ensure_users_schema_and_default(engine):
         if orphan_ids:
             conn.exec_driver_sql("UPDATE users SET is_active=0 WHERE id IN (%s)" % ",".join(str(r[0]) for r in orphan_ids))
 
-def _ensure_obra_servicos_schema_and_indexes(engine)
+def _ensure_obra_servicos_schema_and_indexes(engine):
 
 # ---- Bootstrap helper: (re)create tables & indexes safely, used on first SELECT failure
 def ensure_all_schemas():
@@ -684,7 +684,6 @@ def safe_select(session, stmt, fallback=None):
         print('[WARN] SELECT failed, ensuring schema and retrying once:', e)
         ensure_all_schemas()
         return session.execute(stmt)  # if this fails again, let it bubble
-:
     with engine.begin() as conn:
         tables = {r[0] for r in conn.exec_driver_sql("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
         if "obra_servicos" not in tables:
