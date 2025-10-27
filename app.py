@@ -436,7 +436,9 @@ def banner(kind: str, text: str, button: dict | None = None):
             )
 
 def flash(kind: str, text: str, button: dict | None = None):
-    q = st.session_state_inject_css(s.get("theme_mode"))
+    q = st.session_state.get("_flash", [])
+    q.append({"k": (kind or "info"), "t": text or "", "b": button})
+    st.session_state["_flash"] = q
     
     q.append({"k": kind, "t": text, "b": button})
 
@@ -556,18 +558,16 @@ with tb3:
         s["logged_in"] = False
         flash("info", "Sessão encerrada.")
         _rerun()
-        # Após o radio:
+        # Depois do radio:
 if "theme_prev" not in s:
     s["theme_prev"] = s["theme_mode"]
 
 if s["theme_mode"] != s["theme_prev"]:
-    # persiste preferência
     prefs = load_user_prefs()
     prefs["theme_mode"] = s["theme_mode"]
     save_user_prefs(prefs)
     s["theme_prev"] = s["theme_mode"]
-    _inject_css(s["theme_mode"])  # re-injeta CSS no novo modo
-    _rerun()
+    _rerun()  # deixa a injeção de CSS acontecer no início do script
 
 # =============================================================================
 # Painel Admin + Autorizações + Auditoria
@@ -1004,12 +1004,15 @@ def to_df(sess: Session, table) -> pd.DataFrame:
 def gerar_numero_os(sess: Session) -> str:
     ano = datetime.now().year
     prefix = f"HAB-{ano}-"
-    ultimo = sess.execute(select(OS).where(OS.numero.like(f"{prefix}%")).order_by(OS.id.desc())).scalars().first()
-    if not ultimo:
-        seq = 1
-    else:
-        try: seq = int(ultimo.numero.split("-")[-1]) + 1
-        except: seq = ultimo.id + 1
+    ultimo = (sess.execute(
+        select(OS).where(OS.numero.like(f"{prefix}%")).order_by(OS.id.desc())
+    ).scalars().first())
+    seq = 1
+    if ultimo:
+        try:
+            seq = int(str(ultimo.numero).split("-")[-1]) + 1
+        except:
+            seq = (ultimo.id or 0) + 1
     return f"{prefix}{seq:04d}"
 
 def format_brl(v: float) -> str:
@@ -1060,9 +1063,11 @@ def _download_btn_if_exists(label: str, path_str: str | None) -> None:
         st.download_button(label=label, data=p.read_bytes(), file_name=p.name, mime="application/octet-stream")
 
 def _abs_ok(path_str: str | None) -> tuple[bool, str]:
-    if not path_str: return (False, "")
+    if not path_str:
+        return (False, "")
     p = Path(path_str)
-    if not p.is_absolute(): p = BASE_DIR / p
+    if not p.is_absolute():
+        p = (BASE_DIR / p).resolve()
     return (p.exists() and p.is_file(), p.name)
 
 # =============================================================================
@@ -1386,9 +1391,18 @@ def gerar_pdf_fechamento(cliente_nome: str, periodo_str: str, linhas: list[dict]
 
 # ===================== PÁGINAS: Cadastros =====================
 @require_perm("relatorios_export")
-def page_clientes():
-    st.markdown('<div class="section-title">Cadastro de Clientes</div>', unsafe_allow_html=True)
-    col_new, col_list = st.columns([1, 2])
+def page_export():
+    st.markdown('<div class="section-title">Exportações</div>', unsafe_allow_html=True)
+    with st.expander("Backup (DB + anexos)", expanded=False):
+        if st.button("Gerar backup ZIP", key="btn_backup_zip"):
+            p = make_full_backup()
+            st.download_button(
+                "Baixar backup",
+                data=p.read_bytes(),
+                file_name=p.name,
+                mime="application/zip",
+                key="dl_backup_zip"
+            )
 
     with col_new:
         st.markdown('<div class="card">', unsafe_allow_html=True)
@@ -1981,7 +1995,6 @@ def page_visualizar_imprimir():
     fim_default = max_dt or hoje
     if ini_default > fim_default:
         ini_default, fim_default = fim_default, ini_default
-    periodo = f3.date_input("Período", value=(ini_default, fim_default), key="flt_periodo_print")
 
     df_view = os_df_full.copy()
     if obra_filtro != "(Todas)":
