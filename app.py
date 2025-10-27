@@ -656,12 +656,30 @@ def _ensure_obra_servicos_schema_and_indexes(engine):
         if "preco_unit" not in cols:
             conn.exec_driver_sql("ALTER TABLE os_itens ADD COLUMN preco_unit REAL")
             conn.exec_driver_sql("""UPDATE os_itens SET preco_unit = (SELECT preco_unit FROM servicos s WHERE s.id = os_itens.servico_id) WHERE preco_unit IS NULL""")
-
+def _ensure_obras_core_columns(engine):
+    """Garante colunas essenciais em 'obras' para versões antigas do DB."""
+    with engine.begin() as conn:
+        cols = {r[1] for r in conn.exec_driver_sql("PRAGMA table_info('obras')").fetchall()}
+        # Coluna 'ativo' usada em vários filtros
+        if "ativo" not in cols:
+            conn.exec_driver_sql("ALTER TABLE obras ADD COLUMN ativo INTEGER DEFAULT 1")
+        # Já garantimos 'cliente_id', 'bloqueada', 'bloqueada_motivo', 'bloqueada_desde' em outra função,
+        # mas não faz mal verificar de novo (idempotente).
+        if "cliente_id" not in cols:
+            conn.exec_driver_sql("ALTER TABLE obras ADD COLUMN cliente_id INTEGER")
+        if "bloqueada" not in cols:
+            conn.exec_driver_sql("ALTER TABLE obras ADD COLUMN bloqueada INTEGER DEFAULT 0")
+        if "bloqueada_motivo" not in cols:
+            conn.exec_driver_sql("ALTER TABLE obras ADD COLUMN bloqueada_motivo TEXT")
+        if "bloqueada_desde" not in cols:
+            conn.exec_driver_sql("ALTER TABLE obras ADD COLUMN bloqueada_desde DATE")
+           
 _ensure_medicoes_schema(engine)
 _ensure_clientes_schema_and_backfill(engine)
 _ensure_obras_attachments(engine)
 _ensure_users_schema_and_default(engine)
 _ensure_obra_servicos_schema_and_indexes(engine)
+_ensure_obras_core_columns(engine)  # <-- NOVO: garante 'obras.ativo' (e demais)
 
 # =============================================================================
 # Helpers
