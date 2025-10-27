@@ -544,12 +544,22 @@ engine = create_engine(f"sqlite:///{DB_PATH}", future=True, connect_args={"check
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 Base.metadata.create_all(engine)
 
+
+def _create_index_safe(conn, stmt: str):
+    try:
+        conn.exec_driver_sql(stmt)
+    except Exception as e:
+        # Log to console but don't crash the app; navigation must still render.
+        print(f"[WARN] Index creation skipped: {stmt} -> {e}")
+
 with engine.begin() as conn:
-    conn.exec_driver_sql("PRAGMA journal_mode=WAL;")
-    conn.exec_driver_sql("PRAGMA synchronous=NORMAL;")
-    conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_os_obra_data ON os(obra_id, data_emissao);")
-    conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_os_status ON os(status);")
-    conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_os_numero ON os(numero);")
+    _create_index_safe(conn, "PRAGMA journal_mode=WAL;")
+    _create_index_safe(conn, "PRAGMA synchronous=NORMAL;")
+    _create_index_safe(conn, "CREATE INDEX IF NOT EXISTS ix_os_obra_data ON os(obra_id, data_emissao);")
+    _create_index_safe(conn, "CREATE INDEX IF NOT EXISTS ix_os_status ON os(status);")
+    _create_index_safe(conn, "CREATE INDEX IF NOT EXISTS ix_os_numero ON os(numero);")
+    _create_index_safe(conn, "CREATE INDEX IF NOT EXISTS ix_ositem_osid ON os_itens(os_id);")
+    _create_index_safe(conn, "CREATE INDEX IF NOT EXISTS ix_medicoes_obra ON medicoes(obra_id);")
     conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_ositem_osid ON os_itens(os_id);")
     conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_medicoes_obra ON medicoes(obra_id);")
 
