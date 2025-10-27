@@ -147,25 +147,26 @@ def login_ui():
     render_flashes()
 
 def force_change_password_ui(username: str):
-    st.header("Trocar senha")
-    new_pwd = st.text_input("Nova senha", type="password")
-    confirm_pwd = st.text_input("Confirmar nova senha", type="password")
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Definir nova senha</div>', unsafe_allow_html=True)
+    p1 = st.text_input("Nova senha", type="password")
+    p2 = st.text_input("Confirmar nova senha", type="password")
     if st.button("Salvar nova senha"):
-        if len(new_pwd) < 4:
-            flash_message('warn', "Use ao menos 4 caracteres.")
-        elif new_pwd != confirm_pwd:
-            flash_message('error', "As senhas não conferem.")
+        if len(p1) < 4:
+            banner_warn("Use ao menos 4 caracteres.")
+        elif p1 != p2:
+            banner_error("As senhas não conferem.")
         else:
-            rec = get_user(username)
-            salt, pw_hash = hash_password(new_pwd)
-            rec['salt'] = salt
-            rec['password'] = pw_hash
+            rec = user_get(username) or {}
+            rec['password'] = hash_password_simple(p1)
             rec['mustchange'] = False
-            set_user(username, rec)
-            flash_message('success', "Senha atualizada! Faça login novamente.")
-            st.session_state.mustchange = False
-            st.session_state.loggedin = False
+            user_set(username, rec)
+            log_event("password_changed", username=username)
+            flash_success("Senha atualizada! Faça login novamente se necessário.")
+            st.session_state['mustchange'] = False
             st.experimental_rerun()
+            st.stop()  # PARA execução imediatamente após rerun
+    st.markdown('</div>', unsafe_allow_html=True)
     render_flashes()
 
 # -- MAIN APP --
