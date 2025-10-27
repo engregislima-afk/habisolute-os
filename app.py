@@ -452,7 +452,7 @@ if s.get("must_change", False):
 # Header/topbar
 _render_header()
 nome_login = s.get("username") or load_user_prefs().get("last_user") or "—"
-papel = "Admin" if s.get("is_admin") else s.get("role","usuário").capitalize()
+papel = "Usuário"
 st.markdown(
     f"<div class='card'>👋 Olá, <b>{nome_login}</b> — <span style='opacity:.9'>{papel}</span></div>",
     unsafe_allow_html=True
@@ -486,14 +486,14 @@ if s["theme_mode"] != s["theme_prev"]:
 # =============================================================================
 # Painel Admin + Auditoria
 # =============================================================================
-CAN_ADMIN      = bool(s.get("is_admin", False))
+CAN_ADMIN = False
 ROLE           = s.get("role","usuario")
-CAN_VIEW_AUDIT = CAN_ADMIN or has_perm(s.get("username",""), ROLE, "auditoria_view")
+CAN_VIEW_AUDIT = True, ROLE, "auditoria_view")
 
-if CAN_ADMIN:
+if False:  # Admin panel disabled
     with st.expander("👤 Painel de Usuários (Admin)", expanded=False):
         st.markdown("Cadastre, ative/desative, defina papéis e redefina senhas.")
-        tab1, tab2, tab3 = st.tabs(["Usuários", "Novo usuário", "Autorizações"])
+        tab1, tab2 = st.tabs(["Usuários (desativado)", "Novo usuário (desativado)"])
 
         # Usuários
         with tab1:
