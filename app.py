@@ -645,45 +645,7 @@ def _ensure_users_schema_and_default(engine):
         if orphan_ids:
             conn.exec_driver_sql("UPDATE users SET is_active=0 WHERE id IN (%s)" % ",".join(str(r[0]) for r in orphan_ids))
 
-
-# ---- Bootstrap helper: (re)create tables & indexes safely, used on first SELECT failure
 def _ensure_obra_servicos_schema_and_indexes(engine):
-def ensure_all_schemas():
-    try:
-        Base.metadata.create_all(engine)
-    except Exception as e:
-        print("[WARN] create_all failed:", e)
-    try:
-        _ensure_medicoes_schema(engine)
-    except Exception as e:
-        print("[WARN] _ensure_medicoes_schema failed:", e)
-    try:
-        _ensure_clientes_schema_and_backfill(engine)
-    except Exception as e:
-        print("[WARN] _ensure_clientes_schema_and_backfill failed:", e)
-    try:
-        _ensure_obras_attachments(engine)
-    except Exception as e:
-        print("[WARN] _ensure_obras_attachments failed:", e)
-    try:
-        _ensure_users_schema_and_default(engine)
-    except Exception as e:
-        print("[WARN] _ensure_users_schema_and_default failed:", e)
-    try:
-        _ensure_obra_servicos_schema_and_indexes(engine)
-    except Exception as e:
-        print("[WARN] _ensure_obra_servicos_schema_and_indexes failed:", e)
-
-from sqlalchemy.exc import OperationalError
-
-def safe_select(session, stmt, fallback=None):
-    \"\"\"Execute a SELECT. If schema is missing/corrupted, ensure schemas and retry once.\"\"\"
-    try:
-        return session.execute(stmt)
-    except OperationalError as e:
-        print('[WARN] SELECT failed, ensuring schema and retrying once:', e)
-        ensure_all_schemas()
-        return session.execute(stmt)  # if this fails again, let it bubble
     with engine.begin() as conn:
         tables = {r[0] for r in conn.exec_driver_sql("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
         if "obra_servicos" not in tables:
@@ -1029,7 +991,7 @@ def page_clientes():
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown("#### Clientes")
         with SessionLocal() as sess:
-            clientes = safe_select(sess, select(Cliente).order_by(Cliente.nome.asc())).scalars().all()
+            clientes = sess.execute(select(Cliente).order_by(Cliente.nome.asc())).scalars().all()
         if not clientes:
             banner("info", "Nenhum cliente ainda."); st.markdown('</div>', unsafe_allow_html=True); return
         df = pd.DataFrame([{"id": c.id, "nome": c.nome, "documento": c.documento, "contato": c.contato,
@@ -1086,7 +1048,7 @@ def page_obras():
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown("#### Nova Obra")
         with SessionLocal() as sess:
-            clientes = (safe_select(sess, select(Cliente).where(Cliente.ativo == 1).order_by(Cliente.nome.asc())).scalars().all())
+            clientes = (sess.execute(select(Cliente).where(Cliente.ativo == 1).order_by(Cliente.nome.asc())).scalars().all())
         nome = st.text_input("Nome da Obra *", key="obra_new_nome")
         endereco = st.text_input("Endereço *", key="obra_new_end")
         cliente_opt = ["(Sem cliente)"] + [c.nome for c in clientes]
@@ -1108,7 +1070,7 @@ def page_obras():
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown("#### Obras")
         with SessionLocal() as sess:
-            obras = (safe_select(sess, select(Obra).options(selectinload(Obra.cliente_ref)).order_by(Obra.nome.asc())).scalars().all())
+            obras = (sess.execute(select(Obra).options(selectinload(Obra.cliente_ref)).order_by(Obra.nome.asc())).scalars().all())
         if not obras:
             banner("info", "Nenhuma obra cadastrada."); st.markdown("</div>", unsafe_allow_html=True); return
         df = pd.DataFrame([{"id": o.id, "nome": o.nome, "endereco": o.endereco,
@@ -1122,7 +1084,7 @@ def page_obras():
         if obra_sel:
             with SessionLocal() as sess:
                 o = sess.get(Obra, obra_sel.id)
-                clientes = safe_select(sess, select(Cliente).order_by(Cliente.nome.asc())).scalars().all()
+                clientes = sess.execute(select(Cliente).order_by(Cliente.nome.asc())).scalars().all()
                 e1, e2 = st.columns(2)
                 with e1:
                     o.nome = st.text_input("Nome", value=o.nome or "", key=f"obra_edit_nome_{o.id}")
@@ -1544,7 +1506,7 @@ def page_medicao():
 def page_relatorios():
     st.markdown('<div class="section-title">Relatórios por Cliente</div>', unsafe_allow_html=True)
     with SessionLocal() as sess:
-        clientes = safe_select(sess, select(Cliente).where(Cliente.ativo == 1).order_by(Cliente.nome.asc())).scalars().all()
+        clientes = sess.execute(select(Cliente).where(Cliente.ativo == 1).order_by(Cliente.nome.asc())).scalars().all()
     if not clientes: banner("info", "Cadastre clientes para usar os relatórios."); return
     cliente_sel = st.selectbox("Cliente", clientes, format_func=lambda c: c.nome, key="rel_cli_sel")
     if bool(getattr(cliente_sel, "bloqueado", 0)):
