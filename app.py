@@ -488,7 +488,7 @@ if s["theme_mode"] != s["theme_prev"]:
 # =============================================================================
 CAN_ADMIN = False
 ROLE           = s.get("role","usuario")
-CAN_VIEW_AUDIT = True, ROLE, "auditoria_view")
+CAN_VIEW_AUDIT = True
 
 if False:  # Admin panel disabled
     with st.expander("👤 Painel de Usuários (Admin)", expanded=False):
