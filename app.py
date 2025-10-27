@@ -430,69 +430,11 @@ if s["theme_mode"] != s["theme_prev"]:
 # =============================================================================
 CAN_ADMIN = False
 ROLE           = s.get("role","usuario")
-CAN_VIEW_AUDIT = True
+CAN_VIEW_AUDIT = False
 
 # =============================================================================
 # Auditoria
 # =============================================================================
-if CAN_VIEW_AUDIT:
-    with st.expander("🧾 Auditoria do Sistema (Log de Diretoria)", expanded=False):
-        df_log = read_audit_df()
-        if df_log.empty:
-            banner("info", "Sem eventos de auditoria ainda.")
-        else:
-            c1, c2, c3, c4 = st.columns([1.4, 1.2, 1.2, 1.0])
-            with c1:
-                users_opt = ["(Todos)"] + sorted([u for u in df_log["user"].dropna().unique().tolist()])
-                f_user = st.selectbox("Usuário", users_opt, index=0, key="flt_user_aud")
-            with c2:
-                f_action = st.text_input("Ação contém...", "", key="flt_action_aud")
-            with c3:
-                lv_opts = ["(Todos)", "INFO", "WARN", "ERROR"]
-                f_level = st.selectbox("Nível", lv_opts, index=0, key="flt_level_aud")
-            with c4:
-                page_size = st.selectbox("Linhas", [100, 300, 1000], index=1, key="flt_page_aud")
-
-            logv = df_log.copy()
-            if f_user and f_user != "(Todos)":
-                logv = logv[logv["user"] == f_user]
-            if f_action:
-                logv = logv[logv["action"].str.contains(f_action, case=False, na=False)]
-            if f_level and f_level != "(Todos)":
-                logv = logv[logv["level"] == f_level]
-
-            total = len(logv)
-            if total > 0:
-                pcols = st.columns([1, 3, 1])
-                with pcols[0]:
-                    page = st.number_input("Página", min_value=1, max_value=max(1, (total - 1) // int(page_size) + 1), value=1, step=1, key="aud_page")
-                start = (int(page) - 1) * int(page_size)
-                end = start + int(page_size)
-                view = logv.iloc[start:end].copy()
-            else:
-                view = logv.copy()
-
-            st.dataframe(view, use_container_width=True)
-
-            cdl1, cdl2 = st.columns([1, 1])
-            with cdl1:
-                st.download_button(
-                    "CSV (filtro aplicado)",
-                    data=view.to_csv(index=False).encode("utf-8"),
-                    file_name=f"audit_{SYSTEM_CODE}_{datetime.utcnow().strftime('%Y-%m-%d')}.csv",
-                    mime="text/csv",
-                    use_container_width=True,
-                    key="dl_aud_csv",
-                )
-            with cdl2:
-                st.download_button(
-                    "JSONL (completo)",
-                    data=AUDIT_LOG.read_bytes() if AUDIT_LOG.exists() else b"",
-                    file_name=f"audit_full_{SYSTEM_CODE}.jsonl",
-                    mime="application/json",
-                    use_container_width=True,
-                    key="dl_aud_jsonl",
-                )
 
 # =============================================================================
 # DB (SQLite)
