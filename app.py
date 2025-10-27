@@ -2,10 +2,10 @@
 # Habisolute — Sistema de OS (Streamlit)
 # Visual Fluent/Windows 11 + banners + avisos + medição em dias + APIBrasil (auto)
 
-import io, re, os, json, base64, tempfile, zipfile, hashlib, hmac, secrets, calendar
+import os, re, json, urllib.request, urllib.error
 from datetime import date, datetime
 from pathlib import Path
-from typing import Optional, Tuple, List, Dict, Any
+from typing import Any, Dict, List, Optional, Tuple
 
 import streamlit as st
 import pandas as pd
@@ -15,28 +15,16 @@ from sqlalchemy import (
     create_engine, Column, Integer, String, Float, Date, ForeignKey, Text,
     select, func
 )
-from sqlalchemy.orm import declarative_base, sessionmaker, relationship, Session, selectinload
+from sqlalchemy.orm import declarative_base, sessionmaker, relationship, Session
 
-# ReportLab (PDF)
-from reportlab.lib.pagesizes import A4, landscape
-from reportlab.lib.units import mm
-from reportlab.lib import colors
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.enums import TA_CENTER
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-try:
-    from reportlab.platypus import KeepTogether
-except Exception:
-    from reportlab.platypus.flowables import KeepTogether
-
-# =============================================================================
+# -----------------------------------------------------------------------------
 # Identidade / Config
-# =============================================================================
+# -----------------------------------------------------------------------------
 SYSTEM_NAME = "Habisolute — Sistema de OS"
 SYSTEM_CODE = "hab_os"
 BRAND_COLOR = "#f97316"
 
-st.set_page_config(page_title=SYSTEM_NAME, layout="wide")
+st.set_page_config(page_title=SYSTEM_NAME, page_icon="🧱", layout="wide")
 
 BASE_DIR   = Path(__file__).resolve().parent
 PREFS_DIR  = BASE_DIR / f".{SYSTEM_CODE}"; PREFS_DIR.mkdir(parents=True, exist_ok=True)
@@ -45,13 +33,11 @@ AUDIT_LOG  = PREFS_DIR / "audit.jsonl"
 PERMS_DB   = PREFS_DIR / "perms.json"
 PREFS_PATH = PREFS_DIR / "prefs.json"
 
-# =============================================================================
-# Preferências simples
-# =============================================================================
+# -----------------------------------------------------------------------------
+# Preferências simples (persistidas em .hab_os/prefs.json)
+# -----------------------------------------------------------------------------
 def _save_all_prefs(data: Dict[str, Any]) -> None:
-    tmp = PREFS_DIR / "prefs.tmp"
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(PREFS_PATH)
+    PREFS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 def _load_all_prefs() -> Dict[str, Any]:
     try:
@@ -63,11 +49,12 @@ def _load_all_prefs() -> Dict[str, Any]:
 
 def load_user_prefs(key: str="default")->Dict[str,Any]:
     return _load_all_prefs().get(key,{})
-
 def save_user_prefs(prefs: Dict[str,Any], key: str="default")->None:
     data=_load_all_prefs(); data[key]=prefs; _save_all_prefs(data)
 
-# ---------- APIBrasil token: descoberta automática ----------
+# -----------------------------------------------------------------------------
+# Descoberta automática do token da APIBrasil
+# -----------------------------------------------------------------------------
 def _discover_apibr_token() -> Optional[str]:
     # 1) st.secrets
     try:
@@ -79,7 +66,7 @@ def _discover_apibr_token() -> Optional[str]:
             if v: return v
     except Exception:
         pass
-    # 2) variáveis de ambiente
+    # 2) environment
     for k in ("APIBRASIL_TOKEN","APIBR_TOKEN","APIBRASIL_BEARER","APIBRASIL"):
         v = os.environ.get(k)
         if v and str(v).strip():
@@ -90,7 +77,7 @@ def _discover_apibr_token() -> Optional[str]:
         if p: return str(p).strip()
     except Exception:
         pass
-    # 4) arquivo .hab_os/apibrasil.token
+    # 4) arquivo simples
     f = PREFS_DIR / "apibrasil.token"
     if f.exists():
         try:
@@ -102,25 +89,21 @@ def _discover_apibr_token() -> Optional[str]:
 
 def _prefs_get_token() -> Optional[str]:
     return _discover_apibr_token()
-
 def _prefs_set_token(value: Optional[str]) -> None:
     prefs = load_user_prefs()
     if value:
         prefs["apibrasil_token"] = value.strip()
-        # também grava um arquivo simples para compatibilidade
         try: (PREFS_DIR / "apibrasil.token").write_text(value.strip(), encoding="utf-8")
         except Exception: pass
     else:
         prefs.pop("apibrasil_token", None)
-        try:
-            (PREFS_DIR / "apibrasil.token").unlink(missing_ok=True)
-        except Exception:
-            pass
+        try: (PREFS_DIR / "apibrasil.token").unlink(missing_ok=True)
+        except Exception: pass
     save_user_prefs(prefs)
 
-# =============================================================================
+# -----------------------------------------------------------------------------
 # Auditoria
-# =============================================================================
+# -----------------------------------------------------------------------------
 def _now_iso():
     return datetime.utcnow().isoformat(timespec="seconds") + "Z"
 
@@ -136,97 +119,206 @@ def log_event(action: str, meta: Dict[str, Any] | None = None, level: str = "INF
     except Exception:
         pass
 
-def read_audit_df() -> pd.DataFrame:
-    if not AUDIT_LOG.exists():
-        return pd.DataFrame(columns=["ts","user","level","action","meta","system"])
-    rows = []
-    with AUDIT_LOG.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line: continue
-            try:
-                rec = json.loads(line)
-                rows.append({
-                    "ts": rec.get("ts"), "user": rec.get("user"),
-                    "level": rec.get("level"), "action": rec.get("action"),
-                    "meta": json.dumps(rec.get("meta") or {}, ensure_ascii=False),
-                    "system": rec.get("system", ""),
-                })
-            except Exception:
-                continue
-    df = pd.DataFrame(rows, columns=["ts","user","level","action","meta","system"])
-    if not df.empty:
-        df = df.sort_values("ts", ascending=False, kind="stable").reset_index(drop=True)
-    return df
-
-# =============================================================================
-# Estado
-# =============================================================================
+# -----------------------------------------------------------------------------
+# Estado / Tema
+# -----------------------------------------------------------------------------
 s = st.session_state
-s.setdefault("logged_in", False)
-s.setdefault("username", None)
-s.setdefault("is_admin", False)
-s.setdefault("role", "usuario")     # usuario | gestor | diretoria | admin
+s.setdefault("logged_in", True)        # para demo: logado por padrão
+s.setdefault("username", "admin")
+s.setdefault("is_admin", True)
+s.setdefault("role", "admin")
 s.setdefault("must_change", False)
 s.setdefault("theme_mode", load_user_prefs().get("theme_mode", "Claro"))
 s.setdefault("brand", load_user_prefs().get("brand", "Laranja"))
 s.setdefault("_flash", [])
 
 def _rerun():
-    try:
-        st.rerun()
+    try: st.rerun()
     except Exception:
-        try:
-            st.experimental_rerun()
-        except Exception:
-            pass
-# =============================================================================
-# CSS / Banners
-# =============================================================================
-# (… o CSS do seu app permanece igual …)
-# ——— para abreviar, mantenha aqui o mesmo bloco _inject_css, banner, flash, etc. ———
+        try: st.experimental_rerun()
+        except Exception: pass
 
-# =============================================================================
-# Login / Header (iguais ao seu código anterior)
-# =============================================================================
-# … tudo igual …
+# -----------------------------------------------------------------------------
+# CSS (look Windows 11) + banners/flash
+# -----------------------------------------------------------------------------
+def _inject_css():
+    st.markdown(
+        f"""
+<style>
+:root {{
+  --brand: {BRAND_COLOR};
+}}
+html, body, [class*="block-container"] {{
+  background: {"#0f1116" if s.theme_mode=="Escuro" else "#fafafa"};
+  color: {"#f5f5f5" if s.theme_mode=="Escuro" else "#111"};
+}}
+.hb-card {{
+  background: {"#141821" if s.theme_mode=="Escuro" else "#fff"};
+  border: 1px solid {"#273043" if s.theme_mode=="Escuro" else "rgba(0,0,0,.08)"};
+  border-radius: 16px; padding: 14px;
+}}
+.section-title {{ font-size: 20px; font-weight: 800; margin: 4px 0 8px 0; }}
+.card {{ background: var(--card,#fff); border:1px solid rgba(0,0,0,.08); border-radius:14px; padding:14px; margin-bottom:10px; }}
+.banner {{
+  padding:10px 12px; border-radius:12px; margin:8px 0; font-weight:600;
+}}
+.banner-info {{ background: rgba(59,130,246,.12); color:#60a5fa; border:1px solid rgba(59,130,246,.25); }}
+.banner-warn {{ background: rgba(245,158,11,.12); color:#f59e0b; border:1px solid rgba(245,158,11,.25); }}
+.banner-error{{ background: rgba(239,68,68,.12);  color:#f87171; border:1px solid rgba(239,68,68,.25); }}
+.banner-success{{ background: rgba(16,185,129,.12); color:#34d399; border:1px solid rgba(16,185,129,.25); }}
+.stButton>button, .stDownloadButton>button {{
+  background: var(--brand); color:#111; border:none; border-radius: 12px;
+  padding:.6rem 1rem; font-weight:800; box-shadow:0 8px 18px rgba(249,115,22,.25);
+}}
+.stButton>button:disabled, .stDownloadButton>button:disabled {{
+  opacity:.55; box-shadow:none;
+}}
+.hb-side-title {{ display:flex; gap:8px; align-items:center; font-weight:800; margin:6px 0 10px; }}
+.hb-dot {{ width:8px; height:8px; background:var(--brand); border-radius:50%; display:inline-block }}
+</style>
+""",
+        unsafe_allow_html=True,
+    )
 
+def banner(kind: str, text: str):
+    cls = {
+        "info": "banner-info",
+        "warn": "banner-warn",
+        "error": "banner-error",
+        "success": "banner-success",
+    }.get(kind, "banner-info")
+    st.markdown(f'<div class="banner {cls}">{text}</div>', unsafe_allow_html=True)
+
+def flash(kind: str, text: str):
+    s._flash.append((kind, text))
+
+def flash_render():
+    if s._flash:
+        for k,t in s._flash: banner(k,t)
+        s._flash.clear()
+
+_inject_css()
+
+# -----------------------------------------------------------------------------
+# Permissões mínimas
+# -----------------------------------------------------------------------------
+DEFAULT_PERMS = {
+    "admin": ["*"],
+    "gestor": ["os_create","os_view","relatorios_export","dashboard_view"],
+    "usuario": ["os_create","os_view","dashboard_view"],
+    "diretoria": ["relatorios_export","dashboard_view"],
+}
+
+def has_perm(user: str, role: str, perm: str) -> bool:
+    if s.get("is_admin"): return True
+    perms = DEFAULT_PERMS.get(role or "usuario", [])
+    return "*" in perms or perm in perms
+
+def require_perm(perm: str):
+    def deco(fn):
+        def wrapper(*args, **kwargs):
+            if has_perm(s.get("username",""), s.get("role","usuario"), perm):
+                return fn(*args, **kwargs)
+            banner("error", f"Sem permissão ({perm}).")
+        return wrapper
+    return deco
+
+# Header simples (você pode trocar por login real)
+st.sidebar.markdown("### Usuário")
+st.sidebar.write(f"👤 **{s.username}** — *{s.role}*")
 # =============================================================================
-# DB (SQLite) — modelos e ensures (iguais ao seu código anterior)
+# DB (SQLite) — modelos
 # =============================================================================
 Base = declarative_base()
 
-class User(Base): ...
+# Se quiser uma tabela de usuários depois, troque este mixin por um modelo completo
+class User:
+    __abstract__ = True
+
 class Cliente(Base):
     __tablename__ = "clientes"
+
     id = Column(Integer, primary_key=True)
     nome = Column(String, nullable=False, unique=True)
+
     documento = Column(String)
-    contato = Column(String)
-    email = Column(String)
-    telefone = Column(String)
-    ativo = Column(Integer, default=1)
-    bloqueado = Column(Integer, default=0)
+    contato   = Column(String)
+    email     = Column(String)
+    telefone  = Column(String)
+
+    ativo            = Column(Integer, default=1)
+    bloqueado        = Column(Integer, default=0)
     bloqueado_motivo = Column(Text)
-    bloqueado_desde = Column(Date)
-    obras = relationship("Obra", back_populates="cliente_ref")
+    bloqueado_desde  = Column(Date)
 
-class Obra(Base): ...
-class Servico(Base): ...
-class ObraServico(Base): ...
-class OS(Base): ...
-class OSItem(Base): ...
-class Medicao(Base): ...
+    obras = relationship("Obra", back_populates="cliente_ref", cascade="all, delete-orphan")
 
+class Obra(Base):
+    __tablename__ = "obras"
+
+    id = Column(Integer, primary_key=True)
+    nome = Column(String, nullable=False)
+
+    cliente_id = Column(Integer, ForeignKey("clientes.id"), nullable=True)
+    cliente    = Column(String, nullable=True)   # compatível com filtro por nome
+
+    cliente_ref = relationship("Cliente", back_populates="obras")
+
+class Servico(Base):
+    __tablename__ = "servicos"
+
+    id   = Column(Integer, primary_key=True)
+    nome = Column(String, nullable=False, unique=True)
+    unidade = Column(String)
+    preco_unitario = Column(Float, default=0.0)
+
+class ObraServico(Base):
+    __tablename__ = "obra_servicos"
+
+    id = Column(Integer, primary_key=True)
+    obra_id    = Column(Integer, ForeignKey("obras.id"), nullable=False)
+    servico_id = Column(Integer, ForeignKey("servicos.id"), nullable=False)
+    quant      = Column(Float, default=0.0)
+
+class OS(Base):
+    __tablename__ = "os"
+
+    id = Column(Integer, primary_key=True)
+    obra_id = Column(Integer, ForeignKey("obras.id"), nullable=False)
+    emissao = Column(Date, default=date.today)
+    status  = Column(String, default="Aberta")
+
+class OSItem(Base):
+    __tablename__ = "os_itens"
+
+    id = Column(Integer, primary_key=True)
+    os_id      = Column(Integer, ForeignKey("os.id"), nullable=False)
+    servico_id = Column(Integer, ForeignKey("servicos.id"), nullable=False)
+    quantidade = Column(Float, default=0.0)
+    preco      = Column(Float, default=0.0)
+
+class Medicao(Base):
+    __tablename__ = "medicoes"
+
+    id = Column(Integer, primary_key=True)
+    obra_id = Column(Integer, ForeignKey("obras.id"), nullable=False)
+    competencia = Column(String, nullable=True)  # "2025-10"
+    data_ref    = Column(Date, nullable=True)
+    valor       = Column(Float, default=0.0)
+
+# Engine/Session
 DB_PATH = Path(__file__).with_name("os_habisolute.db")
-engine = create_engine(f"sqlite:///{DB_PATH}", future=True, connect_args={"check_same_thread": False})
+engine = create_engine(
+    f"sqlite:///{DB_PATH}",
+    future=True,
+    connect_args={"check_same_thread": False}
+)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+
 Base.metadata.create_all(engine)
 
-# … PRAGMAs e funções _ensure_* (iguais) …
-
 # =============================================================================
-# Helpers
+# Helpers gerais
 # =============================================================================
 STATUS_OPTIONS = ["Aberta", "Em Execução", "Medido em Aberto", "Medido", "Concluída", "Cancelada"]
 
@@ -234,21 +326,16 @@ def format_brl(v: float) -> str:
     try: return f"R$ {float(v):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     except Exception: return "R$ 0,00"
 
-# ---------- Normalização e detecção de CNPJ ----------
 def _only_digits(txt: str) -> str:
     return re.sub(r"\D+", "", txt or "")
 
 def _looks_like_cnpj(txt: str) -> bool:
     return len(_only_digits(txt)) == 14
 
-# ---------- Cliente APIBrasil ----------
-import urllib.request, urllib.error
-
+# =============================================================================
+# APIBrasil — consulta CNPJ (token auto)
+# =============================================================================
 def buscar_cnpj_apibrasil(doc: str, silent: bool=False) -> Tuple[bool, Dict[str, Any] | str]:
-    """
-    Retorna (True, dados) em caso de sucesso; (False, msg) caso contrário.
-    Token é descoberto automaticamente (_discover_apibr_token).
-    """
     cnpj = _only_digits(doc)
     if not cnpj or len(cnpj) not in (11, 14):
         return (False, "Documento inválido (informe um CNPJ/CPF).")
@@ -257,17 +344,13 @@ def buscar_cnpj_apibrasil(doc: str, silent: bool=False) -> Tuple[bool, Dict[str,
     if not token:
         return (False, "Token da APIBrasil não configurado.")
 
-    # endpoint CNPJ da APIBrasil
-    url = f"https://brasilapi.com.br/api/cnpj/v1/{cnpj}"  # compatível com APIBrasil-proxy
+    url = f"https://brasilapi.com.br/api/cnpj/v1/{cnpj}"  # compatível com proxy da APIBrasil
     req = urllib.request.Request(url)
-    # alguns proxies da APIBrasil exigem Bearer; manter cabeçalho se existir
     req.add_header("Authorization", f"Bearer {token}")
-
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             body = resp.read().decode("utf-8", errors="ignore")
             data = json.loads(body)
-            # normaliza chaves mais usadas
             out = {
                 "razao_social": data.get("razao_social") or data.get("nome") or data.get("razaoSocial"),
                 "nome_fantasia": data.get("nome_fantasia") or data.get("fantasia") or data.get("nomeFantasia"),
@@ -280,46 +363,36 @@ def buscar_cnpj_apibrasil(doc: str, silent: bool=False) -> Tuple[bool, Dict[str,
     except Exception:
         return (False, "Falha ao consultar a APIBrasil.")
 
-# ---------- autofill ao digitar CNPJ ----------
 def _auto_fill_from_cnpj(field_key: str, target_prefix: str, edit_id: int|None=None):
-    """
-    Se o conteúdo do campo 'field_key' parecer CNPJ e houver token, busca e
-    preenche '..._nome' (e-mail/telefone se vierem).
-    target_prefix: 'cli_new' ou f'cli_edit_nome_{id}' base.
-    """
     txt = st.session_state.get(field_key, "")
     prev_key = f"{field_key}__prev"
     if st.session_state.get(prev_key) == txt:
         return
     st.session_state[prev_key] = txt
 
-    if not _looks_like_cnpj(txt):
-        return
-    if not _discover_apibr_token():
-        return
+    if not _looks_like_cnpj(txt): return
+    if not _discover_apibr_token(): return
 
     ok, res = buscar_cnpj_apibrasil(txt, silent=True)
-    if not ok:
-        return
+    if not ok: return
     nome_api = (res.get("razao_social") or res.get("nome_fantasia") or "").strip()
-    if not nome_api:
-        return
+    if not nome_api: return
 
     if target_prefix == "cli_new":
         st.session_state["cli_new_nome"] = nome_api
         if res.get("email"): st.session_state["cli_new_email"] = res["email"]
         if res.get("telefone"): st.session_state["cli_new_tel"] = str(res["telefone"])
     else:
-        # edição
         if edit_id is not None:
             st.session_state[f"cli_edit_nome_{edit_id}"] = nome_api
-# ===================== PÁGINAS: Cadastros =====================
 
+# =============================================================================
+# Página — Clientes
+# =============================================================================
 @require_perm("relatorios_export")
 def page_clientes():
     st.markdown('<div class="section-title">Cadastro de Clientes</div>', unsafe_allow_html=True)
 
-    # Preferências (opcional): continua disponível, mas agora o token é descoberto sozinho.
     with st.expander("⚙️ Preferências de Integração (APIBrasil)", expanded=False):
         tok = st.text_input("Token da APIBrasil (Bearer)", type="password", value=_prefs_get_token() or "")
         c1, c2 = st.columns(2)
@@ -338,7 +411,6 @@ def page_clientes():
 
         doc_col, _ = st.columns([2,1])
         documento = doc_col.text_input("Documento (CNPJ/CPF) — opcional", key="cli_new_doc")
-        # AUTO: ao digitar CNPJ válido, busca e preenche
         _auto_fill_from_cnpj("cli_new_doc", "cli_new")
 
         nome = st.text_input("Nome do Cliente *", key="cli_new_nome")
@@ -398,8 +470,7 @@ def page_clientes():
             with SessionLocal() as sess:
                 c = sess.get(Cliente, cli_sel.id)
 
-                top_cnpj = st.text_input("CNPJ para consulta — opcional", value=c.documento or "", key=f"cli_edit_doc_{c.id}")
-                # AUTO: ao digitar CNPJ na edição, preenche nome
+                st.text_input("CNPJ para consulta — opcional", value=c.documento or "", key=f"cli_edit_doc_{c.id}")
                 _auto_fill_from_cnpj(f"cli_edit_doc_{c.id}", "cli_edit", edit_id=c.id)
 
                 e1, e2 = st.columns(2)
@@ -429,7 +500,6 @@ def page_clientes():
                             c.bloqueado = 0; c.bloqueado_desde = None; c.bloqueado_motivo = None
                         else:
                             c.bloqueado_motivo = (novo_motivo or None)
-                        # persiste CNPJ editado
                         c.documento = st.session_state.get(f"cli_edit_doc_{c.id}") or c.documento
                         sess.commit(); flash("success", "Cliente atualizado."); _rerun()
 
@@ -445,14 +515,40 @@ def page_clientes():
                     if bcol2.button("Excluir cliente", use_container_width=True, disabled=not conf, key=f"cli_del_{c.id}"):
                         sess.delete(c); sess.commit(); flash("success", "Cliente excluído."); _rerun()
         st.markdown('</div>', unsafe_allow_html=True)
+# =============================================================================
+# Demais páginas (stubs prontos para você completar)
+# =============================================================================
+def page_obras():
+    st.markdown('<div class="section-title">Cadastro de Obras</div>', unsafe_allow_html=True)
+    banner("info", "Stub: implemente aqui o cadastro de obras.")
 
-# ===================== DEMAIS PÁGINAS (mantidas) =====================
-# Use exatamente as versões que você já tinha para:
-# page_obras, page_servicos, page_emitir_os, page_visualizar_imprimir,
-# page_medicao, page_relatorios, page_export
-# (nenhuma funcionalidade foi alterada nelas)
+def page_servicos():
+    st.markdown('<div class="section-title">Cadastro de Serviços</div>', unsafe_allow_html=True)
+    banner("info", "Stub: implemente aqui o cadastro de serviços.")
 
-# ===================== MENU / ROUTER =====================
+def page_emitir_os():
+    st.markdown('<div class="section-title">Emitir OS</div>', unsafe_allow_html=True)
+    banner("info", "Stub: emissão de OS.")
+
+def page_visualizar_imprimir():
+    st.markdown('<div class="section-title">Visualizar / Imprimir OS</div>', unsafe_allow_html=True)
+    banner("info", "Stub: listagem e impressão de OS.")
+
+def page_medicao():
+    st.markdown('<div class="section-title">Medição Mensal</div>', unsafe_allow_html=True)
+    banner("info", "Stub: medição mensal.")
+
+def page_relatorios():
+    st.markdown('<div class="section-title">Relatórios</div>', unsafe_allow_html=True)
+    banner("info", "Stub: relatórios.")
+
+def page_export():
+    st.markdown('<div class="section-title">Exportações</div>', unsafe_allow_html=True)
+    banner("info", "Stub: exportações.")
+
+# =============================================================================
+# Menu / Router
+# =============================================================================
 st.sidebar.markdown("###  Sistema OS")
 st.sidebar.markdown(
     """
