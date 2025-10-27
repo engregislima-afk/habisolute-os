@@ -646,8 +646,37 @@ def _ensure_users_schema_and_default(engine):
             conn.exec_driver_sql("UPDATE users SET is_active=0 WHERE id IN (%s)" % ",".join(str(r[0]) for r in orphan_ids))
 
 def _ensure_obra_servicos_schema_and_indexes(engine):
+    with engine.begin() as conn:
+        tables = {r[0] for r in conn.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()}
+        if "obra_servicos" not in tables:
+            conn.exec_driver_sql("""
+                CREATE TABLE obra_servicos (
+                    id INTEGER PRIMARY KEY,
+                    obra_id INTEGER NOT NULL,
+                    servico_id INTEGER NOT NULL,
+                    preco_unit REAL,
+                    ativo INTEGER DEFAULT 1,
+                    FOREIGN KEY(obra_id) REFERENCES obras(id),
+                    FOREIGN KEY(servico_id) REFERENCES servicos(id)
+                )
+            """)
+            conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_obraserv_obra ON obra_servicos(obra_id)")
+            conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_obraserv_srv  ON obra_servicos(servico_id)")
 
-# ---- Bootstrap helper: (re)create tables & indexes safely, used on first SELECT failure
+        cols = {r[1] for r in conn.exec_driver_sql("PRAGMA table_info('os_itens')").fetchall()}
+        if "preco_unit" not in cols:
+            conn.exec_driver_sql("ALTER TABLE os_itens ADD COLUMN preco_unit REAL")
+            conn.exec_driver_sql("""
+                UPDATE os_itens
+                SET preco_unit = (
+                    SELECT preco_unit FROM servicos s WHERE s.id = os_itens.servico_id
+                )
+                WHERE preco_unit IS NULL
+            """)
+
+# ---- Bootstrap helper: garante esquema e reexecuta SELECT de leitura se necessário
 def ensure_all_schemas():
     try:
         Base.metadata.create_all(engine)
@@ -677,13 +706,15 @@ def ensure_all_schemas():
 from sqlalchemy.exc import OperationalError
 
 def safe_select(session, stmt, fallback=None):
-    \"\"\"Execute a SELECT. If schema is missing/corrupted, ensure schemas and retry once.\"\"\"
+    """Executa SELECT; se faltar schema, corrige e tenta 1 vez de novo."""
     try:
         return session.execute(stmt)
     except OperationalError as e:
-        print('[WARN] SELECT failed, ensuring schema and retrying once:', e)
+        print("[WARN] SELECT failed, ensuring schema and retrying once:", e)
         ensure_all_schemas()
-        return session.execute(stmt)  # if this fails again, let it bubble
+        return session.execute(stmt) 
+        
+# if this fails again, let it bubble
 :
     with engine.begin() as conn:
         tables = {r[0] for r in conn.exec_driver_sql("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
