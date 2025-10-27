@@ -705,32 +705,43 @@ def ensure_all_schemas():
 
 from sqlalchemy.exc import OperationalError
 
-def safe_select(session, stmt, fallback=None):
-    """Executa SELECT; se faltar schema, corrige e tenta 1 vez de novo."""
+def init_db():
+    # Garante tabelas
     try:
-        return session.execute(stmt)
-    except OperationalError as e:
-        print("[WARN] SELECT failed, ensuring schema and retrying once:", e)
-        ensure_all_schemas()
-        return session.execute(stmt) 
-        
-# if this fails again, let it bubble
-    with engine.begin() as conn:
-        tables = {r[0] for r in conn.exec_driver_sql("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-        if "obra_servicos" not in tables:
-            conn.exec_driver_sql("""CREATE TABLE obra_servicos (id INTEGER PRIMARY KEY, obra_id INTEGER NOT NULL, servico_id INTEGER NOT NULL, preco_unit REAL, ativo INTEGER DEFAULT 1, FOREIGN KEY(obra_id) REFERENCES obras(id), FOREIGN KEY(servico_id) REFERENCES servicos(id))""")
-            conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_obraserv_obra ON obra_servicos(obra_id)")
-            conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_obraserv_srv  ON obra_servicos(servico_id)")
-        cols = {r[1] for r in conn.exec_driver_sql("PRAGMA table_info('os_itens')").fetchall()}
-        if "preco_unit" not in cols:
-            conn.exec_driver_sql("ALTER TABLE os_itens ADD COLUMN preco_unit REAL")
-            conn.exec_driver_sql("""UPDATE os_itens SET preco_unit = (SELECT preco_unit FROM servicos s WHERE s.id = os_itens.servico_id) WHERE preco_unit IS NULL""")
+        Base.metadata.create_all(engine)
+    except Exception as e:
+        print("[WARN] create_all failed:", e)
 
-_ensure_medicoes_schema(engine)
-_ensure_clientes_schema_and_backfill(engine)
-_ensure_obras_attachments(engine)
-_ensure_users_schema_and_default(engine)
-_ensure_obra_servicos_schema_and_indexes(engine)
+    # Correções adicionais (colunas novas, tabelas auxiliares etc.)
+    try:
+        ensure_all_schemas()
+    except Exception as e:
+        print("[WARN] ensure_all_schemas failed:", e)
+
+    # PRAGMAs e índices com retry
+    try:
+        with engine.begin() as conn:
+            conn.exec_driver_sql("PRAGMA journal_mode=WAL;")
+            conn.exec_driver_sql("PRAGMA synchronous=NORMAL;")
+            conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_os_obra_data ON os(obra_id, data_emissao);")
+            conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_os_status ON os(status);")
+            conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_os_numero ON os(numero);")
+            conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_ositem_osid ON os_itens(os_id);")
+            conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_medicoes_obra ON medicoes(obra_id);")
+    except OperationalError as e:
+        print("[WARN] index creation failed, retrying after ensure_all_schemas():", e)
+        ensure_all_schemas()
+        with engine.begin() as conn:
+            conn.exec_driver_sql("PRAGMA journal_mode=WAL;")
+            conn.exec_driver_sql("PRAGMA synchronous=NORMAL;")
+            conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_os_obra_data ON os(obra_id, data_emissao);")
+            conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_os_status ON os(status);")
+            conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_os_numero ON os(numero);")
+            conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_ositem_osid ON os_itens(os_id);")
+            conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_medicoes_obra ON medicoes(obra_id);")
+
+# CHAME AQUI, logo depois de definir engine/SessionLocal:
+init_db()
 
 # =============================================================================
 # Helpers
