@@ -846,14 +846,33 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, futu
 Base.metadata.create_all(engine)
 
 # Índices/PRAGMA
+
+def _safe_create_index(conn, idx_name: str, table: str, cols: str):
+    try:
+        # check table exists
+        t = conn.exec_driver_sql("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
+        if not t:
+            return
+        # check index exists
+        row = conn.exec_driver_sql("SELECT name FROM sqlite_master WHERE type='index' AND name=?", (idx_name,)).fetchone()
+        if row:
+            return
+        conn.exec_driver_sql(f"CREATE INDEX {idx_name} ON {table}({cols})")
+    except Exception:
+        pass
+
 with engine.begin() as conn:
-    conn.exec_driver_sql("PRAGMA journal_mode=WAL;")
-    conn.exec_driver_sql("PRAGMA synchronous=NORMAL;")
-    conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_os_obra_data ON os(obra_id, data_emissao);")
-    conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_os_status ON os(status);")
-    conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_os_numero ON os(numero);")
-    conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_ositem_osid ON os_itens(os_id);")
-    conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_medicoes_obra ON medicoes(obra_id);")
+    try:
+        conn.exec_driver_sql("PRAGMA journal_mode=WAL;")
+        conn.exec_driver_sql("PRAGMA synchronous=NORMAL;")
+    except Exception:
+        pass
+    _safe_create_index(conn, "ix_os_obra_data", "os", "obra_id, data_emissao")
+    _safe_create_index(conn, "ix_os_status", "os", "status")
+    _safe_create_index(conn, "ix_os_numero", "os", "numero")
+    _safe_create_index(conn, "ix_ositem_osid", "os_itens", "os_id")
+    _safe_create_index(conn, "ix_medicoes_obra", "medicoes", "obra_id")
+
 def _ensure_medicoes_schema(engine):
     with engine.begin() as conn:
         tables = {r[0] for r in conn.exec_driver_sql("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
