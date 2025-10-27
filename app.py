@@ -1575,30 +1575,50 @@ def page_export():
             with p.open("rb") as f:
                 st.download_button("Baixar backup", data=f.read(), file_name=p.name, mime="application/zip", key="dl_backup_zip")
 
+
 # ===================== MENU / ROUTER =====================
 st.sidebar.markdown("###  Sistema OS")
-st.sidebar.markdown("""<div class="hb-side-title"><span class="hb-dot"></span><span>Navegação</span></div>""", unsafe_allow_html=True)
-MENU = ["Emitir OS","Cadastro: Clientes","Cadastro: Obras","Cadastro: Serviços","Visualizar / Imprimir","Medição Mensal","Relatórios","Exportações"]
+st.sidebar.markdown(
+    """
+<div class="hb-side-title">
+  <span class="hb-dot"></span>
+  <span>Navegação</span>
+</div>
+""",
+    unsafe_allow_html=True,
+)
+
+MENU = [
+    "Emitir OS",
+    "Cadastro: Clientes",
+    "Cadastro: Obras",
+    "Cadastro: Serviços",
+    "Visualizar / Imprimir",
+    "Medição Mensal",
+    "Relatórios",
+    "Exportações",
+]
+
 page = st.sidebar.radio("Ir para", MENU, index=0, label_visibility="collapsed", key="router_menu")
-def _has(perm: str)->bool: return has_perm(s.get("username",""), s.get("role","usuario"), perm) or s.get("is_admin", False)
 
 def main_router():
     flash_render()
     if page == "Cadastro: Clientes":
-        page_clientes() if _has("relatorios_export") else banner("error", "Sem permissão (relatorios_export).")
+        page_clientes()
     elif page == "Cadastro: Obras":
-        page_obras() if _has("relatorios_export") else banner("error", "Sem permissão (relatorios_export).")
+        page_obras()
     elif page == "Cadastro: Serviços":
-        page_servicos() if _has("relatorios_export") else banner("error", "Sem permissão (relatorios_export).")
+        page_servicos()
     elif page == "Visualizar / Imprimir":
-        page_visualizar_imprimir() if _has("os_view") else banner("error", "Sem permissão (os_view).")
+        page_visualizar_imprimir()
     elif page == "Medição Mensal":
-        page_medicao() if _has("relatorios_export") else banner("error", "Sem permissão (relatorios_export).")
+        page_medicao()
     elif page == "Relatórios":
-        page_relatorios() if _has("relatorios_export") else banner("error", "Sem permissão (relatorios_export).")
+        page_relatorios()
     elif page == "Exportações":
-        page_export() if _has("relatorios_export") else banner("error", "Sem permissão (relatorios_export).")
+        page_export()
     else:
-        page_emitir_os() if (_has("dashboard_view") or _has("os_create")) else banner("error", "Sem permissão (dashboard_view).")
+        page_emitir_os()
 
+# ====== Entry point ======
 main_router()
