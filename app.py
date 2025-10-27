@@ -715,7 +715,6 @@ def safe_select(session, stmt, fallback=None):
         return session.execute(stmt) 
         
 # if this fails again, let it bubble
-:
     with engine.begin() as conn:
         tables = {r[0] for r in conn.exec_driver_sql("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
         if "obra_servicos" not in tables:
