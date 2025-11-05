@@ -707,37 +707,84 @@ def make_full_backup() -> Path:
 
 # =================== NOVO: Excel por obra ===================
 def make_os_excel_per_obras() -> bytes:
-    """Gera um Excel com uma aba por obra, listando todas as OS daquela obra, ordenadas por data."""
-    from io import BytesIO
-    output = BytesIO()
+    """Gera um Excel em memória com uma aba por obra e todas as OS daquela obra."""
+    output = io.BytesIO()
 
-    with SessionLocal() as sess:
-        obras = sess.query(Obra).order_by(Obra.nome.asc()).all()
-        os_list = sess.query(OS).order_by(OS.data_emissao.asc(), OS.id.asc()).all()
-        obras_map = {o.id: o.nome for o in obras}
+    # usa openpyxl porque costuma estar disponível no ambiente
+    with pd.ExcelWriter(output, engine="openpyxl", datetime_format="DD/MM/YYYY") as writer:
+        with SessionLocal() as sess:
+            obras = sess.query(Obra).order_by(Obra.nome.asc()).all()
+            if not obras:
+                # se não tiver obra, cria uma planilha vazia
+                pd.DataFrame({"msg": ["sem obras"]}).to_excel(writer, sheet_name="Sem_Obras", index=False)
+            else:
+                for obra in obras:
+                    os_list = (
+                        sess.query(OS)
+                        .filter(OS.obra_id == obra.id)
+                        .order_by(OS.data_emissao.asc(), OS.id.asc())
+                        .all()
+                    )
+                    rows = []
+                    for os_row in os_list:
+                        # pega itens dessa OS
+                        itens = (
+                            sess.query(OSItem)
+                            .join(Servico, Servico.id == OSItem.servico_id)
+                            .filter(OSItem.os_id == os_row.id)
+                            .order_by(Servico.codigo.asc())
+                            .all()
+                        )
+                        if itens:
+                            for it in itens:
+                                srv = it.servico
+                                preco = (
+                                    it.preco_unit
+                                    if getattr(it, "preco_unit", None) is not None
+                                    else (srv.preco_unit or 0.0)
+                                )
+                                rows.append(
+                                    {
+                                        "OS": os_row.numero,
+                                        "Data emissão": os_row.data_emissao,
+                                        "Status": os_row.status,
+                                        "Código serviço": srv.codigo,
+                                        "Descrição serviço": srv.descricao,
+                                        "Un": srv.unidade,
+                                        "Qtd prevista": it.quantidade_prevista or 0.0,
+                                        "Preço unit. (snapshot)": preco,
+                                        "Subtotal": (it.quantidade_prevista or 0.0) * float(preco or 0.0),
+                                        "Observações OS": os_row.observacoes or "",
+                                    }
+                                )
+                        else:
+                            # OS sem itens, mas registramos assim mesmo
+                            rows.append(
+                                {
+                                    "OS": os_row.numero,
+                                    "Data emissão": os_row.data_emissao,
+                                    "Status": os_row.status,
+                                    "Código serviço": "",
+                                    "Descrição serviço": "",
+                                    "Un": "",
+                                    "Qtd prevista": 0,
+                                    "Preço unit. (snapshot)": 0,
+                                    "Subtotal": 0,
+                                    "Observações OS": os_row.observacoes or "",
+                                }
+                            )
 
-    if os_list:
-        df_os = pd.DataFrame([{
-            "obra_id": o.obra_id,
-            "Obra": obras_map.get(o.obra_id, f"Obra {o.obra_id}"),
-            "Número OS": o.numero,
-            "Data Emissão": o.data_emissao,
-            "Status": o.status,
-            "Observações": o.observacoes or "",
-        } for o in os_list])
-    else:
-        df_os = pd.DataFrame(columns=["obra_id","Obra","Número OS","Data Emissão","Status","Observações"])
+                    df_obra = pd.DataFrame(rows)
 
-    with pd.ExcelWriter(output, engine="xlsxwriter", datetime_format="dd/mm/yyyy") as writer:
-        if df_os.empty:
-            pd.DataFrame({"info": ["Sem OS cadastradas"]}).to_excel(writer, sheet_name="Sem_dados", index=False)
-        else:
-            for obra_id, grupo in df_os.groupby("obra_id"):
-                nome_obra = grupo["Obra"].iloc[0]
-                grupo = grupo.sort_values("Data Emissão", ascending=True)
-                grupo = grupo[["Número OS", "Data Emissão", "Status", "Observações"]]
-                sheet_name = nome_obra[:31] if nome_obra else f"Obra_{obra_id}"
-                grupo.to_excel(writer, sheet_name=sheet_name or "Obra", index=False)
+                    # nome da aba: até 31 chars, sem caracteres proibidos
+                    sheet_name = obra.nome[:28]  # dá uma reduzida
+                    if not sheet_name:
+                        sheet_name = f"obra_{obra.id}"
+                    # se por acaso tiver / ou \ no nome
+                    sheet_name = sheet_name.replace("/", "_").replace("\\", "_").replace(":", "_")
+                    if df_obra.empty:
+                        df_obra = pd.DataFrame({"msg": ["sem OS para esta obra"]})
+                    df_obra.to_excel(writer, sheet_name=sheet_name, index=False)
 
     output.seek(0)
     return output.getvalue()
