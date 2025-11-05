@@ -58,7 +58,7 @@ def _load_all_prefs() -> Dict[str, Any]:
     except Exception: pass
     return {}
 
-def load_user_prefs(key: str="default")->Dict[str,Any]: 
+def load_user_prefs(key: str="default")->Dict[str,Any]:
     return _load_all_prefs().get(key,{})
 
 def save_user_prefs(prefs: Dict[str,Any], key: str="default")->None:
@@ -83,7 +83,7 @@ def log_event(action: str, meta: Dict[str, Any] | None = None, level: str = "INF
         pass
 
 def read_audit_df() -> pd.DataFrame:
-    if not AUDIT_LOG.exists(): 
+    if not AUDIT_LOG.exists():
         return pd.DataFrame(columns=["ts","user","level","action","meta","system"])
     rows = []
     with AUDIT_LOG.open("r", encoding="utf-8") as f:
@@ -426,17 +426,6 @@ if s["theme_mode"] != s["theme_prev"]:
     _rerun()
 
 # =============================================================================
-# Painel Admin + Auditoria
-# =============================================================================
-CAN_ADMIN = False
-ROLE           = s.get("role","usuario")
-CAN_VIEW_AUDIT = False
-
-# =============================================================================
-# Auditoria
-# =============================================================================
-
-# =============================================================================
 # DB (SQLite)
 # =============================================================================
 Base = declarative_base()
@@ -544,12 +533,10 @@ engine = create_engine(f"sqlite:///{DB_PATH}", future=True, connect_args={"check
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 Base.metadata.create_all(engine)
 
-
 def _create_index_safe(conn, stmt: str):
     try:
         conn.exec_driver_sql(stmt)
     except Exception as e:
-        # Log to console but don't crash the app; navigation must still render.
         print(f"[WARN] Index creation skipped: {stmt} -> {e}")
 
 with engine.begin() as conn:
@@ -656,15 +643,13 @@ def _ensure_obra_servicos_schema_and_indexes(engine):
         if "preco_unit" not in cols:
             conn.exec_driver_sql("ALTER TABLE os_itens ADD COLUMN preco_unit REAL")
             conn.exec_driver_sql("""UPDATE os_itens SET preco_unit = (SELECT preco_unit FROM servicos s WHERE s.id = os_itens.servico_id) WHERE preco_unit IS NULL""")
+
 def _ensure_obras_core_columns(engine):
     """Garante colunas essenciais em 'obras' para versões antigas do DB."""
     with engine.begin() as conn:
         cols = {r[1] for r in conn.exec_driver_sql("PRAGMA table_info('obras')").fetchall()}
-        # Coluna 'ativo' usada em vários filtros
         if "ativo" not in cols:
             conn.exec_driver_sql("ALTER TABLE obras ADD COLUMN ativo INTEGER DEFAULT 1")
-        # Já garantimos 'cliente_id', 'bloqueada', 'bloqueada_motivo', 'bloqueada_desde' em outra função,
-        # mas não faz mal verificar de novo (idempotente).
         if "cliente_id" not in cols:
             conn.exec_driver_sql("ALTER TABLE obras ADD COLUMN cliente_id INTEGER")
         if "bloqueada" not in cols:
@@ -673,13 +658,13 @@ def _ensure_obras_core_columns(engine):
             conn.exec_driver_sql("ALTER TABLE obras ADD COLUMN bloqueada_motivo TEXT")
         if "bloqueada_desde" not in cols:
             conn.exec_driver_sql("ALTER TABLE obras ADD COLUMN bloqueada_desde DATE")
-           
+
 _ensure_medicoes_schema(engine)
 _ensure_clientes_schema_and_backfill(engine)
 _ensure_obras_attachments(engine)
 _ensure_users_schema_and_default(engine)
 _ensure_obra_servicos_schema_and_indexes(engine)
-_ensure_obras_core_columns(engine)  # <-- NOVO: garante 'obras.ativo' (e demais)
+_ensure_obras_core_columns(engine)
 
 # =============================================================================
 # Helpers
@@ -720,6 +705,43 @@ def make_full_backup() -> Path:
                 if p.is_file(): zf.write(p, arcname=str(p.relative_to(base_dir)))
     return zip_path
 
+# =================== NOVO: Excel por obra ===================
+def make_os_excel_per_obras() -> bytes:
+    """Gera um Excel com uma aba por obra, listando todas as OS daquela obra, ordenadas por data."""
+    from io import BytesIO
+    output = BytesIO()
+
+    with SessionLocal() as sess:
+        obras = sess.query(Obra).order_by(Obra.nome.asc()).all()
+        os_list = sess.query(OS).order_by(OS.data_emissao.asc(), OS.id.asc()).all()
+        obras_map = {o.id: o.nome for o in obras}
+
+    if os_list:
+        df_os = pd.DataFrame([{
+            "obra_id": o.obra_id,
+            "Obra": obras_map.get(o.obra_id, f"Obra {o.obra_id}"),
+            "Número OS": o.numero,
+            "Data Emissão": o.data_emissao,
+            "Status": o.status,
+            "Observações": o.observacoes or "",
+        } for o in os_list])
+    else:
+        df_os = pd.DataFrame(columns=["obra_id","Obra","Número OS","Data Emissão","Status","Observações"])
+
+    with pd.ExcelWriter(output, engine="xlsxwriter", datetime_format="dd/mm/yyyy") as writer:
+        if df_os.empty:
+            pd.DataFrame({"info": ["Sem OS cadastradas"]}).to_excel(writer, sheet_name="Sem_dados", index=False)
+        else:
+            for obra_id, grupo in df_os.groupby("obra_id"):
+                nome_obra = grupo["Obra"].iloc[0]
+                grupo = grupo.sort_values("Data Emissão", ascending=True)
+                grupo = grupo[["Número OS", "Data Emissão", "Status", "Observações"]]
+                sheet_name = nome_obra[:31] if nome_obra else f"Obra_{obra_id}"
+                grupo.to_excel(writer, sheet_name=sheet_name or "Obra", index=False)
+
+    output.seek(0)
+    return output.getvalue()
+
 ANEXOS_DIR = BASE_DIR / "anexos" / "obras"; ANEXOS_DIR.mkdir(parents=True, exist_ok=True)
 _VALID_KINDS = {"cnpj", "proposta", "contrato"}
 
@@ -752,7 +774,6 @@ def _abs_ok(path_str: str | None) -> tuple[bool, str]:
     p = Path(path_str)
     if not p.is_absolute(): p = (BASE_DIR / p).resolve()
     return (p.exists() and p.is_file(), p.name)
-
 # =============================================================================
 # PDFs
 # =============================================================================
@@ -840,6 +861,7 @@ def gerar_pdf_os(os_row, obra_row, itens: list[dict], show_prices: bool, logo_by
                              ("LEFTPADDING",(0,0),(-1,-1),6), ("RIGHTPADDING",(0,0),(-1,-1),6),
                              ("TOPPADDING",(0,0),(-1,-1),3), ("BOTTOMPADDING",(0,0),(-1,-1),3),
                              ("ALIGN", (0,1), (1,-1), "LEFT"), ("ALIGN", (2,1), (2,-1), "CENTER"), ("ALIGN", (3,1), (3,-1), "RIGHT")]))
+
     if show_prices: tbl.setStyle(TableStyle([("ALIGN", (-2,1), (-1,-1), "RIGHT")]))
     if show_prices and total_row_index is not None:
         last_label_col = len(headers) - 2
@@ -885,6 +907,8 @@ def gerar_pdf_medicao(obra_nome: str, periodo_str: str, linhas: list[dict], logo
         data_rows.append([r["data"].strftime("%d/%m/%Y") if isinstance(r["data"], date) else r["data"],
                           r["os_num"], r["codigo"], r["descricao"], r["un"],
                           f"{r['qtd']:.2f}", format_brl(r["preco"]), format_brl(r["subtotal"])])
+
+
     W = doc.width
     col_widths = [0.09*W, 0.14*W, 0.12*W, 0.31*W, 0.06*W, 0.08*W, 0.10*W, 0.10*W]
     tbl = Table(data_rows, colWidths=col_widths, repeatRows=1)
@@ -893,22 +917,27 @@ def gerar_pdf_medicao(obra_nome: str, periodo_str: str, linhas: list[dict], logo
                              ("LEFTPADDING",(0,0),(-1,-1),6), ("RIGHTPADDING",(0,0),(-1,-1),6),
                              ("TOPPADDING",(0,0),(-1,-1),3),  ("BOTTOMPADDING",(0,0),(-1,-1),3),
                              ("ALIGN", (0,1), (3,-1), "LEFT"), ("ALIGN", (4,1), (4,-1), "CENTER"), ("ALIGN", (5,1), (7,-1), "RIGHT")]))
+
     story.append(tbl)
+
     resumo = {}
     for r in linhas:
         key = (r["codigo"], r["descricao"], r["un"])
         acc = resumo.setdefault(key, {"qtd": 0.0, "val": 0.0})
         acc["qtd"] += float(r.get("qtd", 0.0) or 0.0)
         acc["val"] += float(r.get("subtotal", 0.0) or 0.0)
+
     story.append(Spacer(1, 10))
     resumo_title = Table([[Paragraph("<b>RESUMO DO PERÍODO</b>", ParagraphStyle("titRES", parent=styleN, fontSize=10.5, leading=12, alignment=TA_CENTER))]], colWidths=[doc.width])
     resumo_title.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,-1), colors.HexColor("#e6e6e6")), ("TEXTCOLOR",(0,0),(-1,-1), colors.black),
                                       ("TOPPADDING",(0,0),(-1,-1),6), ("BOTTOMPADDING",(0,0),(-1,-1),6)]))
     story.append(resumo_title)
+
     res_headers = ["Código", "Descrição", "Un", "Qtd", "Valor Total"]
     res_rows = [res_headers]
     for (cod, desc, un), acc in sorted(resumo.items(), key=lambda x: (x[0][0], x[0][1])):
         res_rows.append([cod, desc, un, f"{acc['qtd']:.2f}", format_brl(acc['val'])])
+
     rW = doc.width
     res_tbl = Table(res_rows, colWidths=[0.14*rW, 0.46*rW, 0.07*rW, 0.13*rW, 0.20*rW], repeatRows=1)
     res_tbl.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0), colors.black), ("TEXTCOLOR",(0,0),(-1,0), colors.white),
@@ -917,6 +946,7 @@ def gerar_pdf_medicao(obra_nome: str, periodo_str: str, linhas: list[dict], logo
                                  ("TOPPADDING",(0,0),(-1,-1),3), ("BOTTOMPADDING",(0,0),(-1,-1),3),
                                  ("ALIGN", (0,1), (1,-1), "LEFT"), ("ALIGN", (2,1), (2,-1), "CENTER"),
                                  ("ALIGN", (3,1), (3,-1), "RIGHT"), ("ALIGN", (4,1), (4,-1), "RIGHT")]))
+
     story.append(res_tbl)
     story.append(Spacer(1, 10))
     total_val = sum(r["subtotal"] for r in linhas) if linhas else 0.0
@@ -1253,7 +1283,6 @@ def page_servicos():
                 if b2.button("Excluir serviço", use_container_width=True, disabled=not conf, key=f"srv_del_{sdb.id}"):
                     sess.delete(sdb); sess.commit(); flash("success", "Serviço excluído."); _rerun()
         st.markdown('</div>', unsafe_allow_html=True)
-
 # ===================== PÁGINAS DE OPERAÇÃO =====================
 def get_servicos_da_obra(sess: Session, obra_id: int) -> List[tuple[ObraServico, Servico]]:
     q = (sess.query(ObraServico, Servico).join(Servico, Servico.id == ObraServico.servico_id)
@@ -1296,7 +1325,7 @@ def page_emitir_os():
         tag = f" [{' & '.join(tags)}]" if tags else ""
         label = f"{o.nome} — {o.endereco} [{cliente_nome}]{tag}"
         opt_pairs.append((o, label, cliente_bloq, obra_bloq))
-    if not opt_pairs: 
+    if not opt_pairs:
         banner("info", "Nenhuma obra encontrada para o termo informado."); return
     idx_escolhido = st.selectbox("Obra *", list(range(len(opt_pairs))), format_func=lambda i: opt_pairs[i][1], key="obra_emit_sel")
     obra_sel, _lbl, cliente_bloqueado, obra_bloqueada = opt_pairs[idx_escolhido]
@@ -1319,7 +1348,8 @@ def page_emitir_os():
             dias = (date.today() - os_ref.data_emissao).days
             msg = ("Medição em atraso" if dias >= 30 else "Medição em dia")
             banner("info", f"{msg}: OS <b>{os_ref.numero}</b> em Aberto há <b>{dias}</b> dias.")
-    except Exception: pass
+    except Exception:
+        pass
     if cliente_bloqueado:
         with SessionLocal() as sess: cli = sess.get(Cliente, obra_sel.cliente_id) if obra_sel.cliente_id else None
         motivo = cli.bloqueado_motivo if cli else "Cliente bloqueado."; desde = cli.bloqueado_desde.strftime("%d/%m/%Y") if (cli and cli.bloqueado_desde) else "-"
@@ -1587,12 +1617,32 @@ def page_relatorios():
 
 def page_export():
     st.markdown('<div class="section-title">Exportações</div>', unsafe_allow_html=True)
+
+    # 1) backup ZIP como já existia
     with st.expander("Backup (DB + anexos)", expanded=False):
         if st.button("Gerar backup ZIP", key="btn_backup_zip"):
             p = make_full_backup()
             with p.open("rb") as f:
-                st.download_button("Baixar backup", data=f.read(), file_name=p.name, mime="application/zip", key="dl_backup_zip")
+                st.download_button(
+                    "Baixar backup",
+                    data=f.read(),
+                    file_name=p.name,
+                    mime="application/zip",
+                    key="dl_backup_zip"
+                )
 
+    # 2) NOVO: Excel por obra
+    with st.expander("Backup em Excel (OS por obra)", expanded=True):
+        st.write("Gera um arquivo .xlsx com uma aba para cada obra e todas as OS daquela obra, organizadas por data.")
+        if st.button("Gerar Excel de OS por obra", key="btn_excel_os_obras"):
+            xls_bytes = make_os_excel_per_obras()
+            st.download_button(
+                "Baixar Excel de OS por obra",
+                data=xls_bytes,
+                file_name=f"os_por_obras_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="dl_excel_os_obras"
+            )
 
 # ===================== MENU / ROUTER =====================
 st.sidebar.markdown("###  Sistema OS")
