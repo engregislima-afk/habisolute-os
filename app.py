@@ -6,6 +6,7 @@ import io, re, os, json, base64, tempfile, zipfile, hashlib, hmac, secrets, cale
 from datetime import date, datetime
 from pathlib import Path
 from typing import Optional, Tuple, List, Dict, Any
+import xml.sax.saxutils as saxutils  # <- para montar o XLSX sem libs externas
 
 import streamlit as st
 import pandas as pd
@@ -380,7 +381,7 @@ def _force_change_password_ui(username: str):
             s["must_change"]=False; _rerun()
     st.markdown("</div>", unsafe_allow_html=True)
 
-# Gate inicial
+# Gate inicial de login
 if not s["logged_in"]:
     _auth_login_ui()
     flash_render()
@@ -400,7 +401,7 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# Toolbar topo (tema + sair)
+# Toolbar topo
 tb1,tb2,tb3 = st.columns([1,1,1])
 with tb1:
     s["theme_mode"] = st.radio("Tema", ["Claro","Escuro"], horizontal=True,
@@ -645,7 +646,6 @@ def _ensure_obra_servicos_schema_and_indexes(engine):
             conn.exec_driver_sql("""UPDATE os_itens SET preco_unit = (SELECT preco_unit FROM servicos s WHERE s.id = os_itens.servico_id) WHERE preco_unit IS NULL""")
 
 def _ensure_obras_core_columns(engine):
-    """Garante colunas essenciais em 'obras' para versões antigas do DB."""
     with engine.begin() as conn:
         cols = {r[1] for r in conn.exec_driver_sql("PRAGMA table_info('obras')").fetchall()}
         if "ativo" not in cols:
@@ -705,90 +705,218 @@ def make_full_backup() -> Path:
                 if p.is_file(): zf.write(p, arcname=str(p.relative_to(base_dir)))
     return zip_path
 
-# =================== NOVO: Excel por obra ===================
-def make_os_excel_per_obras() -> bytes:
-    """Gera um Excel em memória com uma aba por obra e todas as OS daquela obra."""
-    output = io.BytesIO()
+# ========= NOVO: geração de Excel sem depender de openpyxl/xlsxwriter =========
+def _colnum_to_xlsx_col(n: int) -> str:
+    """1 -> A, 2 -> B, 27 -> AA ..."""
+    res = ""
+    while n > 0:
+        n, rem = divmod(n - 1, 26)
+        res = chr(65 + rem) + res
+    return res
 
-    # usa openpyxl porque costuma estar disponível no ambiente
-    with pd.ExcelWriter(output, engine="openpyxl", datetime_format="DD/MM/YYYY") as writer:
-        with SessionLocal() as sess:
-            obras = sess.query(Obra).order_by(Obra.nome.asc()).all()
-            if not obras:
-                # se não tiver obra, cria uma planilha vazia
-                pd.DataFrame({"msg": ["sem obras"]}).to_excel(writer, sheet_name="Sem_Obras", index=False)
-            else:
-                for obra in obras:
-                    os_list = (
-                        sess.query(OS)
-                        .filter(OS.obra_id == obra.id)
-                        .order_by(OS.data_emissao.asc(), OS.id.asc())
-                        .all()
+def _xlsx_from_frames(frames: Dict[str, pd.DataFrame]) -> bytes:
+    """
+    Gera um .xlsx mínimo com 1 aba por frame usando só stdlib.
+    """
+    from zipfile import ZipFile, ZIP_DEFLATED
+    import datetime as _dt
+    out = io.BytesIO()
+    sheet_names = list(frames.keys())
+
+    with ZipFile(out, "w", ZIP_DEFLATED) as z:
+        # [Content_Types].xml
+        content_types = [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">',
+            '  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>',
+            '  <Default Extension="xml" ContentType="application/xml"/>',
+            '  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>',
+            '  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>',
+        ]
+        for i, _ in enumerate(sheet_names, start=1):
+            content_types.append(
+                f'  <Override PartName="/xl/worksheets/sheet{i}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+            )
+        content_types.append("</Types>")
+        z.writestr("[Content_Types].xml", "\n".join(content_types))
+
+        # _rels/.rels
+        rels = [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">',
+            '  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>',
+            "</Relationships>",
+        ]
+        z.writestr("_rels/.rels", "\n".join(rels))
+
+        # xl/workbook.xml
+        sheets_xml = []
+        for i, name in enumerate(sheet_names, start=1):
+            safe_name = saxutils.escape(name[:31] or f"Sheet{i}")
+            sheets_xml.append(f'    <sheet name="{safe_name}" sheetId="{i}" r:id="rId{i}"/>')
+
+        workbook = [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">',
+            "  <sheets>",
+            *sheets_xml,
+            "  </sheets>",
+            "</workbook>",
+        ]
+        z.writestr("xl/workbook.xml", "\n".join(workbook))
+
+        # xl/_rels/workbook.xml.rels
+        wb_rels = [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">',
+        ]
+        for i, _ in enumerate(sheet_names, start=1):
+            wb_rels.append(
+                f'  <Relationship Id="rId{i}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{i}.xml"/>'
+            )
+        wb_rels.append("</Relationships>")
+        z.writestr("xl/_rels/workbook.xml.rels", "\n".join(wb_rels))
+
+        # xl/styles.xml mínimo
+        styles = [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">',
+            "  <fonts count=\"1\"><font><sz val=\"11\"/><name val=\"Calibri\"/></font></fonts>",
+            "  <fills count=\"1\"><fill><patternFill patternType=\"none\"/></fill></fills>",
+            "  <borders count=\"1\"><border><left/><right/><top/><bottom/><diagonal/></border></borders>",
+            "  <cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs>",
+            "  <cellXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyNumberFormat=\"0\"/></cellXfs>",
+            "  <cellStyles count=\"1\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles>",
+            "</styleSheet>",
+        ]
+        z.writestr("xl/styles.xml", "\n".join(styles))
+
+        # Worksheets
+        for idx, name in enumerate(sheet_names, start=1):
+            df = frames[name]
+            cols = list(df.columns)
+            rows_xml = []
+
+            # cabeçalho
+            header_cells = []
+            for col_i, col_name in enumerate(cols, start=1):
+                col_letter = _colnum_to_xlsx_col(col_i)
+                header_cells.append(
+                    f'<c r="{col_letter}1" t="inlineStr"><is><t>{saxutils.escape(str(col_name))}</t></is></c>'
+                )
+            rows_xml.append(f'<row r="1">{"".join(header_cells)}</row>')
+
+            # dados
+            for r_i, (_, row) in enumerate(df.iterrows(), start=2):
+                cells = []
+                for c_i, col_name in enumerate(cols, start=1):
+                    col_letter = _colnum_to_xlsx_col(c_i)
+                    val = row[col_name]
+                    if val is None:
+                        text = ""
+                    elif isinstance(val, (_dt.date, _dt.datetime)):
+                        text = val.strftime("%d/%m/%Y")
+                    else:
+                        text = str(val)
+                    cells.append(
+                        f'<c r="{col_letter}{r_i}" t="inlineStr"><is><t>{saxutils.escape(text)}</t></is></c>'
                     )
-                    rows = []
-                    for os_row in os_list:
-                        # pega itens dessa OS
-                        itens = (
-                            sess.query(OSItem)
-                            .join(Servico, Servico.id == OSItem.servico_id)
-                            .filter(OSItem.os_id == os_row.id)
-                            .order_by(Servico.codigo.asc())
-                            .all()
+                rows_xml.append(f'<row r="{r_i}">{"".join(cells)}</row>')
+
+            sheet_xml = [
+                '<?xml version="1.0" encoding="UTF-8"?>',
+                '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">',
+                "  <sheetData>",
+                *rows_xml,
+                "  </sheetData>",
+                "</worksheet>",
+            ]
+            z.writestr(f"xl/worksheets/sheet{idx}.xml", "\n".join(sheet_xml))
+
+    out.seek(0)
+    return out.getvalue()
+
+def make_os_excel_per_obras() -> bytes:
+    """
+    Monta 1 arquivo Excel com 1 aba por obra, usando apenas stdlib.
+    Cada linha: OS + data + status + item.
+    """
+    with SessionLocal() as sess:
+        obras = sess.query(Obra).order_by(Obra.nome.asc()).all()
+        frames: Dict[str, pd.DataFrame] = {}
+
+        for obra in obras:
+            os_list = (
+                sess.query(OS)
+                .filter(OS.obra_id == obra.id)
+                .order_by(OS.data_emissao.asc(), OS.id.asc())
+                .all()
+            )
+
+            rows = []
+            for os_row in os_list:
+                itens = (
+                    sess.query(OSItem)
+                    .join(Servico, Servico.id == OSItem.servico_id)
+                    .filter(OSItem.os_id == os_row.id)
+                    .order_by(Servico.codigo.asc())
+                    .all()
+                )
+                if itens:
+                    for it in itens:
+                        srv = it.servico
+                        preco = (
+                            it.preco_unit
+                            if getattr(it, "preco_unit", None) is not None
+                            else (srv.preco_unit or 0.0)
                         )
-                        if itens:
-                            for it in itens:
-                                srv = it.servico
-                                preco = (
-                                    it.preco_unit
-                                    if getattr(it, "preco_unit", None) is not None
-                                    else (srv.preco_unit or 0.0)
-                                )
-                                rows.append(
-                                    {
-                                        "OS": os_row.numero,
-                                        "Data emissão": os_row.data_emissao,
-                                        "Status": os_row.status,
-                                        "Código serviço": srv.codigo,
-                                        "Descrição serviço": srv.descricao,
-                                        "Un": srv.unidade,
-                                        "Qtd prevista": it.quantidade_prevista or 0.0,
-                                        "Preço unit. (snapshot)": preco,
-                                        "Subtotal": (it.quantidade_prevista or 0.0) * float(preco or 0.0),
-                                        "Observações OS": os_row.observacoes or "",
-                                    }
-                                )
-                        else:
-                            # OS sem itens, mas registramos assim mesmo
-                            rows.append(
-                                {
-                                    "OS": os_row.numero,
-                                    "Data emissão": os_row.data_emissao,
-                                    "Status": os_row.status,
-                                    "Código serviço": "",
-                                    "Descrição serviço": "",
-                                    "Un": "",
-                                    "Qtd prevista": 0,
-                                    "Preço unit. (snapshot)": 0,
-                                    "Subtotal": 0,
-                                    "Observações OS": os_row.observacoes or "",
-                                }
-                            )
+                        rows.append(
+                            {
+                                "OS": os_row.numero,
+                                "Data emissão": os_row.data_emissao,
+                                "Status": os_row.status,
+                                "Código serviço": srv.codigo,
+                                "Descrição serviço": srv.descricao,
+                                "Un": srv.unidade,
+                                "Qtd prevista": it.quantidade_prevista or 0.0,
+                                "Preço unit. (snapshot)": preco,
+                                "Subtotal": (it.quantidade_prevista or 0.0) * float(preco or 0.0),
+                                "Observações OS": os_row.observacoes or "",
+                            }
+                        )
+                else:
+                    rows.append(
+                        {
+                            "OS": os_row.numero,
+                            "Data emissão": os_row.data_emissao,
+                            "Status": os_row.status,
+                            "Código serviço": "",
+                            "Descrição serviço": "",
+                            "Un": "",
+                            "Qtd prevista": 0,
+                            "Preço unit. (snapshot)": 0,
+                            "Subtotal": 0,
+                            "Observações OS": os_row.observacoes or "",
+                        }
+                    )
 
-                    df_obra = pd.DataFrame(rows)
+            df_obra = pd.DataFrame(rows)
+            if df_obra.empty:
+                df_obra = pd.DataFrame({"msg": ["sem OS para esta obra"]})
 
-                    # nome da aba: até 31 chars, sem caracteres proibidos
-                    sheet_name = obra.nome[:28]  # dá uma reduzida
-                    if not sheet_name:
-                        sheet_name = f"obra_{obra.id}"
-                    # se por acaso tiver / ou \ no nome
-                    sheet_name = sheet_name.replace("/", "_").replace("\\", "_").replace(":", "_")
-                    if df_obra.empty:
-                        df_obra = pd.DataFrame({"msg": ["sem OS para esta obra"]})
-                    df_obra.to_excel(writer, sheet_name=sheet_name, index=False)
+            sheet_name = (obra.nome or f"obra_{obra.id}").strip()[:31]
+            if not sheet_name:
+                sheet_name = f"obra_{obra.id}"
+            sheet_name = sheet_name.replace("/", "_").replace("\\", "_").replace(":", "_")
 
-    output.seek(0)
-    return output.getvalue()
+            frames[sheet_name] = df_obra
 
+    return _xlsx_from_frames(frames)
+
+# =============================================================================
+# Anexos de obras
+# =============================================================================
 ANEXOS_DIR = BASE_DIR / "anexos" / "obras"; ANEXOS_DIR.mkdir(parents=True, exist_ok=True)
 _VALID_KINDS = {"cnpj", "proposta", "contrato"}
 
@@ -908,7 +1036,6 @@ def gerar_pdf_os(os_row, obra_row, itens: list[dict], show_prices: bool, logo_by
                              ("LEFTPADDING",(0,0),(-1,-1),6), ("RIGHTPADDING",(0,0),(-1,-1),6),
                              ("TOPPADDING",(0,0),(-1,-1),3), ("BOTTOMPADDING",(0,0),(-1,-1),3),
                              ("ALIGN", (0,1), (1,-1), "LEFT"), ("ALIGN", (2,1), (2,-1), "CENTER"), ("ALIGN", (3,1), (3,-1), "RIGHT")]))
-
     if show_prices: tbl.setStyle(TableStyle([("ALIGN", (-2,1), (-1,-1), "RIGHT")]))
     if show_prices and total_row_index is not None:
         last_label_col = len(headers) - 2
@@ -964,27 +1091,24 @@ def gerar_pdf_medicao(obra_nome: str, periodo_str: str, linhas: list[dict], logo
                              ("LEFTPADDING",(0,0),(-1,-1),6), ("RIGHTPADDING",(0,0),(-1,-1),6),
                              ("TOPPADDING",(0,0),(-1,-1),3),  ("BOTTOMPADDING",(0,0),(-1,-1),3),
                              ("ALIGN", (0,1), (3,-1), "LEFT"), ("ALIGN", (4,1), (4,-1), "CENTER"), ("ALIGN", (5,1), (7,-1), "RIGHT")]))
-
     story.append(tbl)
 
+    # resumo
     resumo = {}
     for r in linhas:
         key = (r["codigo"], r["descricao"], r["un"])
         acc = resumo.setdefault(key, {"qtd": 0.0, "val": 0.0})
         acc["qtd"] += float(r.get("qtd", 0.0) or 0.0)
         acc["val"] += float(r.get("subtotal", 0.0) or 0.0)
-
     story.append(Spacer(1, 10))
     resumo_title = Table([[Paragraph("<b>RESUMO DO PERÍODO</b>", ParagraphStyle("titRES", parent=styleN, fontSize=10.5, leading=12, alignment=TA_CENTER))]], colWidths=[doc.width])
     resumo_title.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,-1), colors.HexColor("#e6e6e6")), ("TEXTCOLOR",(0,0),(-1,-1), colors.black),
                                       ("TOPPADDING",(0,0),(-1,-1),6), ("BOTTOMPADDING",(0,0),(-1,-1),6)]))
     story.append(resumo_title)
-
     res_headers = ["Código", "Descrição", "Un", "Qtd", "Valor Total"]
     res_rows = [res_headers]
     for (cod, desc, un), acc in sorted(resumo.items(), key=lambda x: (x[0][0], x[0][1])):
         res_rows.append([cod, desc, un, f"{acc['qtd']:.2f}", format_brl(acc['val'])])
-
     rW = doc.width
     res_tbl = Table(res_rows, colWidths=[0.14*rW, 0.46*rW, 0.07*rW, 0.13*rW, 0.20*rW], repeatRows=1)
     res_tbl.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0), colors.black), ("TEXTCOLOR",(0,0),(-1,0), colors.white),
@@ -1330,7 +1454,7 @@ def page_servicos():
                 if b2.button("Excluir serviço", use_container_width=True, disabled=not conf, key=f"srv_del_{sdb.id}"):
                     sess.delete(sdb); sess.commit(); flash("success", "Serviço excluído."); _rerun()
         st.markdown('</div>', unsafe_allow_html=True)
-# ===================== PÁGINAS DE OPERAÇÃO =====================
+
 def get_servicos_da_obra(sess: Session, obra_id: int) -> List[tuple[ObraServico, Servico]]:
     q = (sess.query(ObraServico, Servico).join(Servico, Servico.id == ObraServico.servico_id)
          .filter(ObraServico.obra_id == obra_id, ObraServico.ativo == 1).order_by(Servico.codigo.asc()))
@@ -1395,8 +1519,7 @@ def page_emitir_os():
             dias = (date.today() - os_ref.data_emissao).days
             msg = ("Medição em atraso" if dias >= 30 else "Medição em dia")
             banner("info", f"{msg}: OS <b>{os_ref.numero}</b> em Aberto há <b>{dias}</b> dias.")
-    except Exception:
-        pass
+    except Exception: pass
     if cliente_bloqueado:
         with SessionLocal() as sess: cli = sess.get(Cliente, obra_sel.cliente_id) if obra_sel.cliente_id else None
         motivo = cli.bloqueado_motivo if cli else "Cliente bloqueado."; desde = cli.bloqueado_desde.strftime("%d/%m/%Y") if (cli and cli.bloqueado_desde) else "-"
@@ -1597,7 +1720,6 @@ def page_medicao():
                         sess.add(Medicao(obra_id=obra_sel.id, numero=int(medicao_num), periodo_ini=ini, periodo_fim=fim, criado_em=date.today()))
                         sess.commit()
                     flash("success", f"Todas as OS do período foram marcadas como '{status_aplicar}'."); _rerun()
-
 def page_relatorios():
     st.markdown('<div class="section-title">Relatórios por Cliente</div>', unsafe_allow_html=True)
     with SessionLocal() as sess:
@@ -1664,32 +1786,21 @@ def page_relatorios():
 
 def page_export():
     st.markdown('<div class="section-title">Exportações</div>', unsafe_allow_html=True)
-
-    # 1) backup ZIP como já existia
     with st.expander("Backup (DB + anexos)", expanded=False):
         if st.button("Gerar backup ZIP", key="btn_backup_zip"):
             p = make_full_backup()
             with p.open("rb") as f:
-                st.download_button(
-                    "Baixar backup",
-                    data=f.read(),
-                    file_name=p.name,
-                    mime="application/zip",
-                    key="dl_backup_zip"
-                )
-
-    # 2) NOVO: Excel por obra
-    with st.expander("Backup em Excel (OS por obra)", expanded=True):
-        st.write("Gera um arquivo .xlsx com uma aba para cada obra e todas as OS daquela obra, organizadas por data.")
-        if st.button("Gerar Excel de OS por obra", key="btn_excel_os_obras"):
-            xls_bytes = make_os_excel_per_obras()
-            st.download_button(
-                "Baixar Excel de OS por obra",
-                data=xls_bytes,
-                file_name=f"os_por_obras_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="dl_excel_os_obras"
-            )
+                st.download_button("Baixar backup", data=f.read(), file_name=p.name, mime="application/zip", key="dl_backup_zip")
+    st.markdown("#### Exportar OS por obras (Excel)")
+    if st.button("Gerar Excel de OS por obra", key="btn_os_xls"):
+        xls_bytes = make_os_excel_per_obras()
+        st.download_button(
+            "Baixar Excel",
+            data=xls_bytes,
+            file_name=f"os_por_obras_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="dl_os_xls",
+        )
 
 # ===================== MENU / ROUTER =====================
 st.sidebar.markdown("###  Sistema OS")
