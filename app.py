@@ -17,25 +17,11 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship, Session, selectinload
 
-# ReportLab (PDF)
-from reportlab.lib.pagesizes import A4, landscape
-from reportlab.lib.units import mm
-from reportlab.lib import colors
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.enums import TA_CENTER
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
-try:
-    from reportlab.platypus import KeepTogether
-except Exception:
-    from reportlab.platypus.flowables import KeepTogether
-
 # =============================================================================
 # Identidade / Config
 # =============================================================================
 SYSTEM_NAME = "Habisolute — Sistema de OS"
 SYSTEM_CODE = "hab_os"      # pasta local .hab_os na raiz do projeto
-
-# vamos deixar o laranja um pouco mais agradável e usar no CSS
 BRAND_COLOR = "#f97316"     # laranja base
 
 st.set_page_config(page_title=SYSTEM_NAME, layout="wide")
@@ -46,9 +32,6 @@ USERS_DB   = PREFS_DIR / "users.json"
 AUDIT_LOG  = PREFS_DIR / "audit.jsonl"
 PERMS_DB   = PREFS_DIR / "perms.json"
 PREFS_PATH = PREFS_DIR / "prefs.json"
-
-# novo: caminho padrão da assinatura digital
-SIGNATURE_PATH = PREFS_DIR / "signature.png"
 
 # =============================================================================
 # Preferências simples
@@ -223,15 +206,15 @@ def user_delete(username: str) -> None:
         db["users"].pop(username, None); _save_users(db)
 
 # =============================================================================
-# CSS — melhorado
+# CSS — Windows 11 / Fluent (cores melhoradas)
 # =============================================================================
 def _inject_css(theme: str | None = None):
     mode = (theme or st.session_state.get("theme_mode") or "Claro").strip().lower()
 
     if mode == "claro":
-        HB_BG, HB_CARD, HB_BORDER, HB_TEXT, HB_MUTED, HB_GLASS = "#f3f4f6", "#ffffff", "#e2e8f0", "#0f172a", "#475569", "rgba(15,23,42,.02)"
+        HB_BG, HB_CARD, HB_BORDER, HB_TEXT, HB_MUTED, HB_GLASS = "#f5f5f7", "#ffffff", "#e7e7ec", "#111827", "#6b7280", "rgba(0,0,0,.03)"
     else:
-        HB_BG, HB_CARD, HB_BORDER, HB_TEXT, HB_MUTED, HB_GLASS = "#0f1116", "#141821", "#2a3142", "#f8fafc", "#94a3b8", "rgba(255,255,255,.03)"
+        HB_BG, HB_CARD, HB_BORDER, HB_TEXT, HB_MUTED, HB_GLASS = "#0f172a", "#111827", "#1f2937", "#f8fafc", "#94a3b8", "rgba(255,255,255,.03)"
 
     st.markdown(f"""
 <style>
@@ -246,19 +229,20 @@ def _inject_css(theme: str | None = None):
   --hb-glass: {HB_GLASS};
 }}
 html, body, [data-testid="stAppViewContainer"] {{ background: var(--hb-bg)!important; color: var(--hb-text)!important; }}
-[data-testid="stSidebar"] {{ background: radial-gradient(circle at top, rgba(249,115,22,.4) 0%, rgba(15,17,22,0) 45%), linear-gradient(180deg, rgba(20,24,33,.7), rgba(20,24,33,.05)) !important; border-right: 1px solid rgba(148,163,184,.25); backdrop-filter: blur(10px);}}
+[data-testid="stSidebar"] {{ background: linear-gradient(180deg, rgba(17,24,39,.45), rgba(17,24,39,.25)) !important; border-right: 1px solid var(--hb-border); backdrop-filter: blur(10px);}}
 [data-testid="stSidebar"] .sidebar-content, [data-testid="stSidebar"] * {{ color: var(--hb-text) !important; }}
 .hb-side-title {{ display:flex; align-items:center; gap:.5rem; margin:.25rem 0 1rem 0; font-weight:800; }}
 .hb-dot {{ width:10px; height:10px; border-radius:999px; background: linear-gradient(90deg, var(--hb-accent), var(--hb-accent2)); box-shadow:0 0 10px rgba(249,115,22,.55);}}
-[data-testid="stSidebar"] .stRadio > div[role="radiogroup"] > label {{ position:relative; display:flex; align-items:center; gap:.6rem; padding:.55rem .75rem; border-radius:14px; border:1px solid transparent; background: rgba(15,17,22,.08); transition:all .15s ease; margin:.15rem 0; cursor:pointer;}}
+[data-testid="stSidebar"] .stRadio > div[role="radiogroup"] > label {{ position:relative; display:flex; align-items:center; gap:.6rem; padding:.55rem .75rem; border-radius:14px; border:1px solid transparent; background: rgba(255,255,255,.01); transition:all .15s ease; margin:.15rem 0; cursor:pointer;}}
 [data-testid="stSidebar"] .stRadio input[type="radio"]{{opacity:0; position:absolute; left:-9999px;}}
-[data-testid="stSidebar"] .stRadio > div[role="radiogroup"] > label:hover{{ background: rgba(255,255,255,.07); border-color: rgba(255,255,255,.10);}}
-[data-testid="stSidebar"] .stRadio input[type="radio"]:checked + div{{ color:#0f172a!important; background: radial-gradient(circle at top, #fff 0%, #ffe0c7 90%); border:0!important; box-shadow:0 6px 26px rgba(249,115,22,.35); font-weight:800; border-radius:14px; padding:.55rem .75rem;}}
-.card{{ background: linear-gradient(180deg, rgba(255,255,255,0.85), rgba(255,255,255,0.60)); border:1px solid rgba(148,163,184,.40); border-radius:18px; padding:16px; margin-bottom:14px; box-shadow:0 6px 30px rgba(15,23,42,.08), inset 0 1px 0 rgba(255,255,255,.04);}}
+[data-testid="stSidebar"] .stRadio > div[role="radiogroup"] > label:hover{{ background: rgba(255,255,255,.04); border-color: rgba(255,255,255,.10);}}
+[data-testid="stSidebar"] .stRadio input[type="radio"]:checked + div{{ color:#0f172a!important; background: linear-gradient(180deg, var(--hb-accent), var(--hb-accent2)); border:0!important; box-shadow:0 6px 26px rgba(249,115,22,.28); font-weight:800; border-radius:14px; padding:.55rem .75rem;}}
+.card{{ background: rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,.05); border-radius:18px; padding:16px; margin-bottom:14px; box-shadow:0 4px 32px rgba(0,0,0,.05); backdrop-filter: blur(4px); }}
 .section-title{{ background: linear-gradient(90deg, var(--hb-accent), var(--hb-accent2)); color:#111; font-weight:800; text-align:center; padding:.6rem .8rem; border-radius:12px; margin:0 0 12px 0; }}
-.stTextInput input, .stTextArea textarea, .stNumberInput input, .stDateInput input{{ color:var(--hb-text)!important; background:rgba(248,250,252,.7)!important; border:1px solid rgba(148,163,184,.45)!important; border-radius:12px!important; }}
-.stButton>button, .stDownloadButton>button {{ background: linear-gradient(180deg, var(--hb-accent), var(--hb-accent2)); color:#111!important; font-weight:800; border:0; border-radius:12px; padding:.55rem 1rem; }}
-.hb-banner {{ display:flex; gap:10px; align-items:center; padding:.75rem 1rem; border-radius:14px; border:1px solid rgba(148,163,184,.3); margin:.25rem 0 .75rem 0; background: rgba(248,250,252,.65);}}
+.stTextInput input, .stTextArea textarea, .stNumberInput input, .stDateInput input{{ color:var(--hb-text)!important; background:rgba(255,255,255,.01)!important; border:1px solid var(--hb-border)!important; border-radius:12px!important;}}
+.stButton>button, .stDownloadButton>button {{ background: linear-gradient(180deg, var(--hb-accent), var(--hb-accent2)); color:#0f172a!important; font-weight:700; border:0; border-radius:12px; padding:.55rem 1rem; }}
+.hb-banner {{ display:flex; gap:10px; align-items:center; padding:.75rem 1rem; border-radius:14px; border:1px solid var(--hb-border); margin:.25rem 0 .75rem 0; background: rgba(15,23,42,.35); }}
+.hb-banner .title {{ font-weight:800; }}
 .hb-banner.info    {{ border-left:6px solid #60a5fa; }}
 .hb-banner.warn    {{ border-left:6px solid #facc15; }}
 .hb-banner.success {{ border-left:6px solid #22c55e; }}
@@ -278,10 +262,7 @@ def banner(kind: str, text: str, button: dict | None = None):
     c = st.container()
     with c:
         st.markdown(
-            f"""<div class="hb-banner {kind}">
-                    <div class="title">{icon}</div>
-                    <div style="flex:1">{text}</div>
-                </div>""",
+            f"""<div class="hb-banner {kind}"><div class="title">{icon}</div><div style="flex:1">{text}</div></div>""",
             unsafe_allow_html=True,
         )
         if isinstance(button, dict) and button.get("label"):
@@ -311,22 +292,6 @@ def _render_header():
     st.markdown("<div class='hb-topbar'></div>", unsafe_allow_html=True)
     st.markdown(f"<div class='card' style='padding:.8rem 1rem;'><b>🏗️ {SYSTEM_NAME}</b></div>", unsafe_allow_html=True)
 
-# =============================================================================
-# NOVO: Assinatura digital (helpers)
-# =============================================================================
-def save_signature_file(uploaded_file) -> bool:
-    """Salva a assinatura enviada pelo usuário no diretório de prefs."""
-    if uploaded_file is None:
-        return False
-    data = uploaded_file.getvalue()
-    SIGNATURE_PATH.write_bytes(data)
-    return True
-
-def load_signature_bytes() -> bytes | None:
-    """Carrega bytes da assinatura se existir."""
-    if SIGNATURE_PATH.exists():
-        return SIGNATURE_PATH.read_bytes()
-    return None
 # =============================================================================
 # Login UI
 # =============================================================================
@@ -482,7 +447,7 @@ class Obra(Base):
     id = Column(Integer, primary_key=True)
     nome = Column(String, nullable=False)
     endereco = Column(String, nullable=False)
-    cliente = Column(String)
+    cliente = Column(String)  # legado
     cliente_id = Column(Integer, ForeignKey("clientes.id"))
     ativo = Column(Integer, default=1)
     bloqueada = Column(Integer, default=0)
@@ -516,7 +481,7 @@ class ObraServico(Base):
 class OS(Base):
     __tablename__ = "os"
     id = Column(Integer, primary_key=True)
-    numero = Column(String, nullable=False, unique=True)
+    numero = Column(String, nullable=False, unique=True)  # HAB-AAAA-####
     data_emissao = Column(Date, default=date.today)
     obra_id = Column(Integer, ForeignKey("obras.id"))
     status = Column(String, default="Aberta")
@@ -530,7 +495,7 @@ class OSItem(Base):
     os_id = Column(Integer, ForeignKey("os.id"))
     servico_id = Column(Integer, ForeignKey("servicos.id"))
     quantidade_prevista = Column(Float)
-    preco_unit = Column(Float)
+    preco_unit = Column(Float)  # snapshot
     os = relationship("OS", back_populates="itens")
     servico = relationship("Servico", back_populates="itens")
 
@@ -547,6 +512,7 @@ DB_PATH = Path(__file__).with_name("os_habisolute.db")
 engine = create_engine(f"sqlite:///{DB_PATH}", future=True, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 Base.metadata.create_all(engine)
+
 
 def _create_index_safe(conn, stmt: str):
     try:
@@ -705,6 +671,9 @@ def format_brl(v: float) -> str:
     try: return f"R$ {float(v):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     except Exception: return "R$ 0,00"
 
+# =============================================================================
+# Backup
+# =============================================================================
 BACKUPS_DIR = (BASE_DIR / "backups"); BACKUPS_DIR.mkdir(parents=True, exist_ok=True)
 def make_full_backup() -> Path:
     base_dir = BASE_DIR
@@ -719,6 +688,9 @@ def make_full_backup() -> Path:
                 if p.is_file(): zf.write(p, arcname=str(p.relative_to(base_dir)))
     return zip_path
 
+# =============================================================================
+# Anexos + assinatura
+# =============================================================================
 ANEXOS_DIR = BASE_DIR / "anexos" / "obras"; ANEXOS_DIR.mkdir(parents=True, exist_ok=True)
 _VALID_KINDS = {"cnpj", "proposta", "contrato"}
 
@@ -752,9 +724,34 @@ def _abs_ok(path_str: str | None) -> tuple[bool, str]:
     if not p.is_absolute(): p = (BASE_DIR / p).resolve()
     return (p.exists() and p.is_file(), p.name)
 
-# =============================================================================
-# PDFs — agora aceitam assinatura
-# =============================================================================
+# assinatura digital (imagem) armazenada no .hab_os
+SIGNATURE_PATH = PREFS_DIR / "signature.png"
+
+def save_signature_file(uploaded_file) -> bool:
+    try:
+        data = uploaded_file.getbuffer()
+        SIGNATURE_PATH.write_bytes(data)
+        return True
+    except Exception:
+        return False
+
+def load_signature_bytes() -> bytes | None:
+    if SIGNATURE_PATH.exists():
+        return SIGNATURE_PATH.read_bytes()
+    return None
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.units import mm
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_CENTER
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
+try:
+    from reportlab.platypus import KeepTogether
+except Exception:
+    from reportlab.platypus.flowables import KeepTogether
+from reportlab.lib.utils import ImageReader  # para assinatura
+
+# estilos gerais PDF
 styles = getSampleStyleSheet()
 styleN = styles["BodyText"]
 styleSmall = ParagraphStyle("small", parent=styleN, fontSize=9, leading=11)
@@ -768,12 +765,13 @@ def _header_vertical_centralizado() -> list:
     p3 = Paragraph("(16) 3877-9480", ParagraphStyle("hdr3", parent=styleN, fontSize=9, leading=11, alignment=TA_CENTER))
     p4 = Paragraph(FORM_CODE, ParagraphStyle("hdr4", parent=styleN, fontSize=9, leading=11, alignment=TA_CENTER))
     box = Table([[p1],[p2],[p3],[p4]], colWidths=[180*mm])
-    box.setStyle(TableStyle([("ALIGN",(0,0),(-1,-1),"CENTER"), ("VALIGN",(0,0),(-1,-1),"MIDDLE"), ("TOPPADDING",(0,0),(-1,-1),0), ("BOTTOMPADDING",(0,0),(-1,-1),0), ("LEFTPADDING",(0,0),(-1,-1),0), ("RIGHTPADDING",(0,0),(-1,-1),0)]))
+    box.setStyle(TableStyle([("ALIGN",(0,0),(-1,-1),"CENTER"), ("VALIGN",(0,0),(-1,-1),"MIDDLE"),
+                             ("TOPPADDING",(0,0),(-1,-1),0), ("BOTTOMPADDING",(0,0),(-1,-1),0),
+                             ("LEFTPADDING",(0,0),(-1,-1),0), ("RIGHTPADDING",(0,0),(-1,-1),0)]))
     return [KeepTogether([box]), Spacer(1, 8)]
 
 def _on_page(canvas, doc, _titulo_meta: str = ""):
     from reportlab.lib.colors import black
-    from reportlab.lib.utils import ImageReader
     canvas.saveState()
     w, h = doc.pagesize
     canvas.setFillColor(HB_ORANGE); canvas.setStrokeColor(HB_ORANGE)
@@ -842,19 +840,24 @@ def gerar_pdf_os(os_row, obra_row, itens: list[dict], show_prices: bool, logo_by
                              ("ALIGN", (0,1), (1,-1), "LEFT"), ("ALIGN", (2,1), (2,-1), "CENTER"), ("ALIGN", (3,1), (3,-1), "RIGHT")]))
 
     if show_prices: tbl.setStyle(TableStyle([("ALIGN", (-2,1), (-1,-1), "RIGHT")]))
-
     if show_prices and total_row_index is not None:
         last_label_col = len(headers) - 2
         last_value_col = len(headers) - 1
-        tbl.setStyle(TableStyle([("BACKGROUND", (0,total_row_index), (-1,total_row_index), colors.HexColor("#f5f5f5")),
+        tbl.setStyle(TableStyle([("BACKGROUND", (0,total_row_index), (-1,total_row_index), colors.HexColor("#f5f5f5")) ,
                                  ("FONTNAME", (last_label_col,total_row_index), (last_label_col,total_row_index), "Helvetica-Bold"),
                                  ("FONTNAME", (last_value_col,total_row_index), (last_value_col,total_row_index), "Helvetica-Bold"),
                                  ("ALIGN", (last_value_col,total_row_index), (last_value_col,total_row_index), "RIGHT"),
                                  ("SPAN", (0,total_row_index), (last_label_col-1,total_row_index))]))
     story.append(tbl)
-    story += [Spacer(1, 24), Paragraph("Data: ____/____/______", ParagraphStyle("dt", parent=styleN, fontSize=10, alignment=TA_CENTER)), Spacer(1, 22)]
 
-    # assinatura
+    story += [Spacer(1, 24), Paragraph("Data: ____/____/______", ParagraphStyle("dt", parent=styleN, fontSize=10, alignment=TA_CENTER)), Spacer(1, 14)]
+
+    if signature_bytes:
+        story.append(Paragraph("<b>Assinatura digital:</b>", styleTiny))
+        sig_img = Image(io.BytesIO(signature_bytes), width=50*mm, height=18*mm)
+        story.append(sig_img)
+        story.append(Spacer(1, 8))
+
     ass_tbl = Table([["", "_______________________________", "", "_______________________________", ""],
                      ["", "Assinatura Cliente", "", "Assinatura Laboratorista", ""]], colWidths=[10*mm, 70*mm, 15*mm, 70*mm, 10*mm])
     ass_tbl.setStyle(TableStyle([("ALIGN",(1,0),(1,0),"CENTER"), ("ALIGN",(3,0),(3,0),"CENTER"),
@@ -863,23 +866,7 @@ def gerar_pdf_os(os_row, obra_row, itens: list[dict], show_prices: bool, logo_by
                                  ("LEFTPADDING",(0,0),(-1,-1),0), ("RIGHTPADDING",(0,0),(-1,-1),0)]))
     story.append(ass_tbl)
 
-    def _on_page_with_sig(canvas, doc):
-        _on_page(canvas, doc, "")
-        if signature_bytes:
-            try:
-                sig_img = Image(io.BytesIO(signature_bytes))
-                sig_img.drawHeight = 12 * mm
-                sig_img.drawWidth = 28 * mm
-                x = (doc.pagesize[0] / 2) - 70  # aproximar do centro
-                y = 90  # acima do rodapé
-                canvas.drawImage(Image(io.BytesIO(signature_bytes)).filename, x, y, width=28*mm, height=12*mm, mask='auto')
-            except Exception:
-                pass
-
-    if signature_bytes:
-        doc.build(story, onFirstPage=_on_page_with_sig, onLaterPages=_on_page_with_sig)
-    else:
-        doc.build(story, onFirstPage=lambda c,d:_on_page(c,d,""), onLaterPages=lambda c,d:_on_page(c,d,""))
+    doc.build(story, onFirstPage=lambda c,d:_on_page(c,d,""), onLaterPages=lambda c,d:_on_page(c,d,""))
     return buf.getvalue()
 
 def gerar_pdf_medicao(obra_nome: str, periodo_str: str, linhas: list[dict], logo_bytes: bytes | None, medicao_num: int, signature_bytes: bytes | None = None) -> bytes:
@@ -900,7 +887,6 @@ def gerar_pdf_medicao(obra_nome: str, periodo_str: str, linhas: list[dict], logo
                                  ("TOPPADDING",(0,0),(-1,-1),6), ("BOTTOMPADDING",(0,0),(-1,-1),6),
                                  ("LEFTPADDING",(0,0),(-1,-1),8), ("RIGHTPADDING",(0,0),(-1,-1),8)]))
     story += [tit_tbl, Spacer(1, 8)]
-
     headers = ["Data", "OS", "Código", "Descrição", "Un", "Qtd", "Preço", "Subtotal"]
     data_rows = [headers]
     for r in linhas:
@@ -918,6 +904,7 @@ def gerar_pdf_medicao(obra_nome: str, periodo_str: str, linhas: list[dict], logo
                              ("ALIGN", (0,1), (3,-1), "LEFT"), ("ALIGN", (4,1), (4,-1), "CENTER"), ("ALIGN", (5,1), (7,-1), "RIGHT")]))
 
     story.append(tbl)
+
     resumo = {}
     for r in linhas:
         key = (r["codigo"], r["descricao"], r["un"])
@@ -955,18 +942,13 @@ def gerar_pdf_medicao(obra_nome: str, periodo_str: str, linhas: list[dict], logo
                                  ("TOPPADDING",(0,0),(-1,-1),0), ("BOTTOMPADDING",(0,0),(-1,-1),0)]))
     story.append(wrapper)
 
-    def _on_page_med(canvas, doc):
-        _on_page(canvas, doc, titulo)
-        if signature_bytes:
-            try:
-                canvas.drawImage(Image(io.BytesIO(signature_bytes)).filename, 40, 65, width=28*mm, height=12*mm, mask='auto')
-            except Exception:
-                pass
-
     if signature_bytes:
-        doc.build(story, onFirstPage=_on_page_med, onLaterPages=_on_page_med)
-    else:
-        doc.build(story, onFirstPage=lambda c, d: _on_page(c, d, titulo), onLaterPages=lambda c, d: _on_page(c, d, titulo))
+        story.append(Spacer(1, 12))
+        story.append(Paragraph("<b>Assinatura digital:</b>", styleTiny))
+        sig_img = Image(io.BytesIO(signature_bytes), width=50*mm, height=18*mm)
+        story.append(sig_img)
+
+    doc.build(story, onFirstPage=lambda c, d: _on_page(c, d, titulo), onLaterPages=lambda c, d: _on_page(c, d, titulo))
     return buf.getvalue()
 
 def gerar_pdf_fechamento(cliente_nome: str, periodo_str: str, linhas: list[dict], logo_bytes: bytes | None, signature_bytes: bytes | None = None) -> bytes:
@@ -986,7 +968,6 @@ def gerar_pdf_fechamento(cliente_nome: str, periodo_str: str, linhas: list[dict]
                                  ("ALIGN",(0,0),(-1,-1),"CENTER"), ("VALIGN",(0,0),(-1,-1),"MIDDLE"),
                                  ("TOPPADDING",(0,0),(-1,-1),6), ("BOTTOMPADDING",(0,0),(-1,-1),6)]))
     story += [tit_tbl, Spacer(1, 8)]
-
     agreg = {}
     for r in linhas:
         key = (r.get("obra") or "-", r["codigo"], r["descricao"], r["un"])
@@ -1017,19 +998,67 @@ def gerar_pdf_fechamento(cliente_nome: str, periodo_str: str, linhas: list[dict]
                                  ("TOPPADDING",(0,0),(-1,-1),0), ("BOTTOMPADDING",(0,0),(-1,-1),0)]))
     story.append(wrapper)
 
-    def _on_page_fec(canvas, doc):
-        _on_page(canvas, doc, titulo)
-        if signature_bytes:
-            try:
-                canvas.drawImage(Image(io.BytesIO(signature_bytes)).filename, 50, 65, width=28*mm, height=12*mm, mask='auto')
-            except Exception:
-                pass
-
     if signature_bytes:
-        doc.build(story, onFirstPage=_on_page_fec, onLaterPages=_on_page_fec)
-    else:
-        doc.build(story, onFirstPage=lambda c, d: _on_page(c, d, titulo), onLaterPages=lambda c, d: _on_page(c, d, titulo))
+        story.append(Spacer(1, 12))
+        story.append(Paragraph("<b>Assinatura digital:</b>", styleTiny))
+        sig_img = Image(io.BytesIO(signature_bytes), width=50*mm, height=18*mm)
+        story.append(sig_img)
+
+    doc.build(story, onFirstPage=lambda c, d: _on_page(c, d, titulo), onLaterPages=lambda c, d: _on_page(c, d, titulo))
     return buf.getvalue()
+
+# helper para obter OS com itens (usado na página de impressão)
+def obter_os_com_itens(sess: Session, os_id: int):
+    os_row = sess.query(OS).options(selectinload(OS.itens).selectinload(OSItem.servico)).filter(OS.id == os_id).first()
+    obra_row = sess.get(Obra, os_row.obra_id)
+    itens = []
+    for it in os_row.itens:
+        sv = it.servico
+        preco = it.preco_unit if getattr(it, "preco_unit", None) is not None else (sv.preco_unit or 0.0)
+        itens.append({"codigo": sv.codigo, "descricao": sv.descricao, "unidade": sv.unidade,
+                      "qtd_prev": it.quantidade_prevista or 0.0, "preco_unit": preco, "subtotal": preco * (it.quantidade_prevista or 0.0)})
+    return os_row, obra_row, itens
+
+# =============================================================================
+# Exportar OS por obra para Excel (com fallback CSV)
+# =============================================================================
+def make_os_excel_per_obras() -> tuple[bytes, str]:
+    """Gera um Excel agrupando por obra e ordenando por data.
+       Retorna (bytes, tipo) onde tipo é 'excel' ou 'csv' se não houver engine.
+    """
+    with SessionLocal() as sess:
+        os_list = (sess.query(OS, Obra)
+                   .join(Obra, Obra.id == OS.obra_id)
+                   .order_by(Obra.nome.asc(), OS.data_emissao.asc(), OS.numero.asc())
+                   .all())
+        if not os_list:
+            return b"", "empty"
+
+        rows = []
+        for os_row, ob in os_list:
+            rows.append({
+                "Obra": ob.nome,
+                "Endereço": ob.endereco,
+                "OS Número": os_row.numero,
+                "Data Emissão": os_row.data_emissao,
+                "Status": os_row.status,
+            })
+        df = pd.DataFrame(rows)
+
+    # tenta excel
+    try:
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl", datetime_format="DD/MM/YYYY") as writer:
+            for obra_nome, dfo in df.groupby("Obra"):
+                sheet_name = obra_nome[:30] if obra_nome else "Obra"
+                dfo_sorted = dfo.sort_values("Data Emissão", ascending=True)
+                dfo_sorted.to_excel(writer, sheet_name=sheet_name, index=False)
+        return output.getvalue(), "excel"
+    except ModuleNotFoundError:
+        # fallback pra CSV único
+        csv_buf = io.StringIO()
+        df.to_csv(csv_buf, index=False)
+        return csv_buf.getvalue().encode("utf-8"), "csv"
 # ===================== PÁGINAS CADASTROS =====================
 
 def page_clientes():
@@ -1109,7 +1138,6 @@ def page_clientes():
                     if bcol2.button("Excluir cliente", use_container_width=True, disabled=not conf, key=f"cli_del_{c.id}"):
                         sess.delete(c); sess.commit(); flash("success", "Cliente excluído."); _rerun()
         st.markdown('</div>', unsafe_allow_html=True)
-
 
 def page_obras():
     st.markdown('<div class="section-title">Cadastro de Obras</div>', unsafe_allow_html=True)
@@ -1204,7 +1232,7 @@ def page_obras():
                         if up_contrato is not None: p_rel = _save_anexo(up_contrato, o.id, "contrato");  o.anexo_contrato = p_rel or o.anexo_contrato
                     except Exception as e:
                         banner("error", f"Falha ao salvar anexos: {e}")
-                    sess.commit(); flash("success", "Obra atualizado."); _rerun()
+                    sess.commit(); flash("success", "Obra atualizada."); _rerun()
                 os_count = sess.query(OS).filter(OS.obra_id == o.id).count()
                 if os_count > 0: banner("warn", f"Ao excluir esta obra, {os_count} OS serão removidas.")
                 conf = st.checkbox("Confirmo a exclusão desta obra (e suas OS)", key=f"obra_del_conf_{o.id}")
@@ -1247,7 +1275,6 @@ def page_obras():
                             if cedit4.button("Remover vínculo", key=f"del_edit_{osv.id}"):
                                 sess_osv.delete(osv); sess_osv.commit(); flash("success","Vínculo removido."); _rerun()
         st.markdown("</div>", unsafe_allow_html=True)
-
 
 def page_servicos():
     st.markdown('<div class="section-title">Cadastro de Serviços</div>', unsafe_allow_html=True)
@@ -1306,7 +1333,6 @@ def page_servicos():
                 if b2.button("Excluir serviço", use_container_width=True, disabled=not conf, key=f"srv_del_{sdb.id}"):
                     sess.delete(sdb); sess.commit(); flash("success", "Serviço excluído."); _rerun()
         st.markdown('</div>', unsafe_allow_html=True)
-
 
 # ===================== PÁGINA EMITIR OS =====================
 
@@ -1422,8 +1448,7 @@ def page_emitir_os():
     else:
         banner("info", "Adicione itens para gerar a OS.")
 
-
-# ===================== VISUALIZAR / IMPRIMIR (PDF usa assinatura) =====================
+# ===================== VISUALIZAR / IMPRIMIR =====================
 
 def page_visualizar_imprimir():
     st.markdown('<div class="section-title">Visualizar / Imprimir</div>', unsafe_allow_html=True)
@@ -1498,8 +1523,7 @@ def page_visualizar_imprimir():
         st.download_button("Baixar PDF (cliente — sem preços)", data=pdf_cliente, file_name=f"{os_row.numero}_cliente.pdf", mime="application/pdf", key="dl_pdf_cliente")
     st.markdown("</div>", unsafe_allow_html=True)
 
-
-# ===================== MEDIÇÃO (PDF usa assinatura) =====================
+# ===================== MEDIÇÃO =====================
 
 def page_medicao():
     st.markdown('<div class="section-title">Medição Mensal</div>', unsafe_allow_html=True)
@@ -1572,8 +1596,7 @@ def page_medicao():
                         sess.commit()
                     flash("success", f"Todas as OS do período foram marcadas como '{status_aplicar}'."); _rerun()
 
-
-# ===================== RELATÓRIOS (PDF usa assinatura) =====================
+# ===================== RELATÓRIOS =====================
 
 def page_relatorios():
     st.markdown('<div class="section-title">Relatórios por Cliente</div>', unsafe_allow_html=True)
@@ -1639,8 +1662,7 @@ def page_relatorios():
         pdf = gerar_pdf_fechamento(cliente_sel.nome, periodo_texto, linhas, logo_bytes=None, signature_bytes=load_signature_bytes())
         st.download_button("Imprimir fechamento (PDF)", data=pdf, file_name=f"fechamento_{cliente_sel.nome}_{ini}_{fim}.pdf", mime="application/pdf", key="dl_pdf_fechamento")
 
-
-# ===================== EXPORTAÇÕES (backup + assinatura) =====================
+# ===================== EXPORTAÇÕES =====================
 
 def page_export():
     st.markdown('<div class="section-title">Exportações</div>', unsafe_allow_html=True)
@@ -1649,6 +1671,15 @@ def page_export():
             p = make_full_backup()
             with p.open("rb") as f:
                 st.download_button("Baixar backup", data=f.read(), file_name=p.name, mime="application/zip", key="dl_backup_zip")
+    with st.expander("Backup OS por obra (Excel/CSV)", expanded=False):
+        if st.button("Gerar relatório OS por obra", key="btn_backup_os_excel"):
+            data_bytes, kind = make_os_excel_per_obras()
+            if kind == "empty":
+                banner("info", "Não há OS para exportar.")
+            elif kind == "excel":
+                st.download_button("Baixar OS por obra (Excel)", data=data_bytes, file_name="os_por_obra.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dl_os_excel")
+            else:
+                st.download_button("Baixar OS por obra (CSV)", data=data_bytes, file_name="os_por_obra.csv", mime="text/csv", key="dl_os_csv")
 
     with st.expander("Assinatura digital (PDF)", expanded=True):
         st.write("Envie uma imagem de assinatura (PNG/JPG) para carimbar nos PDFs gerados.")
@@ -1661,7 +1692,6 @@ def page_export():
             st.image(sig, caption="Assinatura atual", width=180)
         else:
             st.caption("Nenhuma assinatura enviada ainda.")
-
 
 # ===================== MENU / ROUTER =====================
 
