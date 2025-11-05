@@ -1048,7 +1048,7 @@ def gerar_pdf_os(os_row, obra_row, itens: list[dict], show_prices: bool, logo_by
     story.append(tbl)
     story += [Spacer(1, 24), Paragraph("Data: ____/____/______", ParagraphStyle("dt", parent=styleN, fontSize=10, alignment=TA_CENTER)), Spacer(1, 22)]
     ass_tbl = Table([["", "_______________________________", "", "_______________________________", ""],
-                     ["", "Assinatura Cliente", "", "Assinatura Laboratorista", ""]], colWidths=[10*mm, 70*mm, 15*mm, 70*mm, 10*mm])
+                     ["", "Assinatura Cliente", "", "Assinatura Representante Habisoute", ""]], colWidths=[10*mm, 70*mm, 15*mm, 70*mm, 10*mm])
     ass_tbl.setStyle(TableStyle([("ALIGN",(1,0),(1,0),"CENTER"), ("ALIGN",(3,0),(3,0),"CENTER"),
                                  ("ALIGN",(1,1),(1,1),"CENTER"), ("ALIGN",(3,1),(3,1),"CENTER"),
                                  ("TOPPADDING",(0,1),(-1,1),2), ("BOTTOMPADDING",(0,0),(-1,-1),0),
