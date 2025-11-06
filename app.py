@@ -204,6 +204,23 @@ html, body, [data-testid="stAppViewContainer"] {{
   margin-bottom:12px;
   color:#111;
 }}
+/* moldura dos campos */
+.stTextInput > div > div > input,
+.stTextArea > div > textarea,
+.stNumberInput input,
+.stDateInput input,
+.stSelectbox > div[data-baseweb="select"] > div {{
+  border:1px solid #cbd5e1 !important;
+  border-radius:12px !important;
+  background:#fff !important;
+  color:{HB_TEXT} !important;
+}}
+.stDateInput input {{
+  padding-left: .5rem !important;
+}}
+.stTextArea > div > textarea {{
+  min-height:80px;
+}}
 </style>
 """, unsafe_allow_html=True)
 
@@ -847,7 +864,8 @@ def page_clientes():
                     c.telefone = st.session_state["cli_tel"]
                     c.ativo = 1 if st.session_state["cli_ativo"] else 0
                     sess.commit()
-                st.success("Cliente atualizado.")
+                flash("success", "Cliente atualizado.")
+                _rerun()
         else:
             st.text_input("Nome / Razão Social", "", key="cli_nome_new")
             st.text_input("CNPJ/CPF", "", key="cli_doc_new")
@@ -872,7 +890,8 @@ def page_clientes():
                         ativo=1,
                     )
                     sess.add(c); sess.commit()
-                st.success("Cliente criado.")
+                flash("success", "Cliente criado.")
+                _rerun()
     st.markdown('</div>', unsafe_allow_html=True)
 
 # ======================================================================
@@ -924,7 +943,7 @@ def page_obras():
                         if cli_obj:
                             nova.cliente_id = cli_obj.id
                     sess.add(nova); sess.commit()
-                st.success("Obra criada.")
+                flash("success", "Obra criada.")
                 _rerun()
         # EDITAR OBRA
         else:
@@ -971,7 +990,7 @@ def page_obras():
                         if ob.bloqueada and not ob.bloqueada_desde:
                             ob.bloqueada_desde = date.today()
                         sess.commit()
-                    st.success("Obra atualizada.")
+                    flash("success", "Obra atualizada.")
                     _rerun()
 
             with tab_anexos:
@@ -1021,7 +1040,7 @@ def page_obras():
                             else:
                                 sess.add(ObraServico(obra_id=obra_edit.id, servico_id=srv_id, preco_unit=preco_espec, ativo=1))
                             sess.commit()
-                        st.success("Serviço vinculado/atualizado.")
+                        flash("success", "Serviço vinculado/atualizado.")
                         _rerun()
 
                 if obra_servs:
@@ -1065,7 +1084,7 @@ def page_servicos():
                     s2.preco_unit = preco
                     s2.ativo = 1 if ativo else 0
                     sess.commit()
-                st.success("Serviço atualizado.")
+                flash("success", "Serviço atualizado.")
                 _rerun()
         else:
             codigo = st.text_input("Código", "")
@@ -1082,7 +1101,7 @@ def page_servicos():
                         ativo=1,
                     )
                     sess.add(sv); sess.commit()
-                st.success("Serviço criado.")
+                flash("success", "Serviço criado.")
                 _rerun()
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -1132,7 +1151,7 @@ def page_emitir_os():
     os_obs_new = st.text_area("Observações", os_obs, height=110)
 
     # -------- ITENS DA OS (com preço da obra) --------
-    st.markdown("Itens da OS")
+    st.markdown("#### Itens da OS")
     col_s, col_q, col_p, col_btn = st.columns([2.8, 1, 1, 0.4])
     with col_s:
         srv_ops = [f"{s.id} — {s.codigo} — {s.descricao}" for s in servicos]
@@ -1188,7 +1207,7 @@ def page_emitir_os():
                 os_obj.status = st.session_state["emit_os_status"]
                 os_obj.observacoes = os_obs_new
                 sess.commit()
-        st.success("OS salva.")
+        flash("success", "OS salva com sucesso.")
         _rerun()
 
     # adicionar item se for OS existente
@@ -1213,13 +1232,14 @@ def page_emitir_os():
                 preco_unit=preco_final,
             )
             sess.add(item); sess.commit()
-        st.success("Item incluído.")
+        flash("success", "Serviço incluído na OS.")
         _rerun()
 
-    # mostrar itens da OS
+    # mostrar itens da OS (tabela embaixo)
     if not modo_novo:
         with SessionLocal() as sess:
             os_row, obra_row, itens = obter_os_com_itens(sess, os_db.id)
+        st.markdown("#### Serviços já adicionados a esta OS")
         if itens:
             df_it = pd.DataFrame(itens).rename(columns={
                 "codigo":"Código",
@@ -1231,7 +1251,9 @@ def page_emitir_os():
             })
             st.dataframe(df_it, use_container_width=True)
         else:
-            st.info("Esta OS ainda não tem itens.")
+            st.info("Esta OS ainda não tem itens. Adicione usando o botão ➕.")
+    else:
+        st.info("Salve a OS primeiro para poder incluir e ver os serviços.")
     st.markdown('</div>', unsafe_allow_html=True)
 
 # ======================================================================
@@ -1387,7 +1409,9 @@ def gerar_pdf_fechamento(cliente_nome: str, periodo_str: str, linhas: list[dict]
     story += [info_tbl, Spacer(1, 6)]
     titulo = "FECHAMENTO POR CLIENTE"
     tit_tbl = Table([[Paragraph(f"<b>{titulo}</b>", ParagraphStyle("t", parent=styleN, fontSize=11, alignment=TA_CENTER))]], colWidths=[doc.width])
-    tit_tbl.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,-1), colors.HexColor("#e6e6e6")),("BOX",(0,0),(-1,-1),0.5,colors.black)]))
+    tit_tbl.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,-1), colors.HexColor("#e6e6e6")),
+
+                                 ("BOX",(0,0),(-1,-1),0.5,colors.black)]))
     story += [tit_tbl, Spacer(1, 6)]
 
     agreg = {}
