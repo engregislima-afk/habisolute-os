@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 # Habisolute — Sistema de OS (Streamlit)
-# fluxo organizado: Nova OS -> Obra -> avisos -> Gerar OS -> itens -> Gravar
-# visão: Visualizar / Imprimir com Editar e Excluir
+
 import io, re, os, json, base64, tempfile, zipfile, hashlib, calendar, secrets
 from datetime import date, datetime
 from pathlib import Path
@@ -109,8 +108,8 @@ s.setdefault("role", "usuario")
 s.setdefault("must_change", False)
 s.setdefault("theme_mode", load_user_prefs().get("theme_mode", "Claro"))
 s.setdefault("_flash", [])
-s.setdefault("current_os_id", None)            # qual OS está sendo editada
-s.setdefault("goto_emitir", False)             # usado quando clicar em editar na tela de visualizar
+s.setdefault("current_os_id", None)
+s.setdefault("goto_emitir", False)
 
 def _rerun():
     try:
@@ -426,7 +425,6 @@ engine = create_engine(f"sqlite:///{DB_PATH}", future=True, connect_args={"check
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 Base.metadata.create_all(engine)
 
-# garantir colunas anexos/ documento
 def _ensure_obras_extra(engine):
     with engine.begin() as conn:
         cols = {r[1] for r in conn.exec_driver_sql("PRAGMA table_info('obras')").fetchall()}
@@ -442,9 +440,6 @@ _ensure_obras_extra(engine)
 
 STATUS_OPTIONS = ["Aberta", "Em Execução", "Medido em Aberto", "Medido", "Concluída", "Cancelada"]
 
-# =============================================================================
-# HELPERS
-# =============================================================================
 BACKUPS_DIR = BASE_DIR / "backups"; BACKUPS_DIR.mkdir(parents=True, exist_ok=True)
 ANEXOS_DIR = BASE_DIR / "anexos" / "obras"; ANEXOS_DIR.mkdir(parents=True, exist_ok=True)
 _VALID_KINDS = {"cnpj", "proposta", "contrato"}
@@ -638,7 +633,7 @@ def gerar_pdf_os(os_row, obra_row, itens: list[dict], show_prices: bool, logo_by
     doc.build(story, onFirstPage=lambda c,d:_on_page(c,d,""), onLaterPages=lambda c,d:_on_page(c,d,""))
     return buf.getvalue()
 
-# ===== PDF de MEDIÇÃO =====
+# ===== PDF de MEDIÇÃO com RESUMO =====
 def gerar_pdf_medicao(obra_nome: str, periodo_str: str, linhas: list[dict], medicao_num: int, signature_bytes: bytes | None = None) -> bytes:
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=landscape(A4), topMargin=28, bottomMargin=40, leftMargin=14, rightMargin=14)
@@ -672,6 +667,7 @@ def gerar_pdf_medicao(obra_nome: str, periodo_str: str, linhas: list[dict], medi
     ]))
     story += [tit_tbl, Spacer(1, 6)]
 
+    # tabela detalhada
     headers = ["Data", "OS", "Código", "Descrição", "Un", "Qtd", "Preço", "Subtotal"]
     data_rows = [headers]
     for r in linhas:
@@ -701,15 +697,54 @@ def gerar_pdf_medicao(obra_nome: str, periodo_str: str, linhas: list[dict], medi
         ("ALIGN",(5,1),(7,-1),"RIGHT"),
     ]))
     story.append(tbl)
+    story.append(Spacer(1, 10))
+
+    # RESUMO por serviço
+    story.append(Paragraph("<b>RESUMO DE SERVIÇOS</b>", ParagraphStyle("r1", parent=styleN, fontSize=10, alignment=TA_CENTER)))
+    resumo = {}
+    total_geral = 0.0
+    for r in linhas:
+        chave = (r["codigo"], r["descricao"], r["un"])
+        acc = resumo.setdefault(chave, {"qtd": 0.0, "val": 0.0})
+        acc["qtd"] += float(r.get("qtd", 0.0) or 0.0)
+        acc["val"] += float(r.get("subtotal", 0.0) or 0.0)
+        total_geral += float(r.get("subtotal", 0.0) or 0.0)
+
+    res_rows = [["Código", "Descrição", "Un", "Qtd total", "Valor total"]]
+    for (cod, desc, un), acc in sorted(resumo.items(), key=lambda x: x[0][0]):
+        res_rows.append([
+            cod,
+            desc,
+            un,
+            f"{acc['qtd']:.2f}",
+            format_brl(acc["val"]),
+        ])
+
+    res_tbl = Table(
+        res_rows,
+        colWidths=[0.11*W, 0.49*W, 0.06*W, 0.12*W, 0.12*W],
+        repeatRows=1,
+    )
+    res_tbl.setStyle(TableStyle([
+        ("BACKGROUND",(0,0),(-1,0),colors.black),
+        ("TEXTCOLOR",(0,0),(-1,0),colors.white),
+        ("GRID",(0,0),(-1,-1),0.25,colors.black),
+        ("ALIGN",(3,1),(4,-1),"RIGHT"),
+    ]))
+    story.append(res_tbl)
     story.append(Spacer(1, 8))
 
-    total_val = sum(r["subtotal"] for r in linhas) if linhas else 0.0
-    total_box = Table([[Paragraph("<b>Total:</b>", styleN), Paragraph(f"<b>{format_brl(total_val)}</b>", styleN)]], colWidths=[28*mm, 38*mm])
+    # total geral
+    total_box = Table(
+        [[Paragraph("<b>Total geral da medição:</b>", styleN),
+          Paragraph(f"<b>{format_brl(total_geral)}</b>", styleN)]],
+        colWidths=[40*mm, 45*mm]
+    )
     total_box.setStyle(TableStyle([
         ("GRID",(0,0),(-1,-1),0.75,colors.black),
         ("ALIGN",(1,0),(1,0),"RIGHT"),
     ]))
-    wrap = Table([[None, total_box]], colWidths=[doc.width - (28*mm+38*mm), (28*mm+38*mm)])
+    wrap = Table([[None, total_box]], colWidths=[doc.width - (40*mm+45*mm), (40*mm+45*mm)])
     story.append(wrap)
 
     doc.build(story, onFirstPage=lambda c,d:_on_page(c,d,titulo), onLaterPages=lambda c,d:_on_page(c,d,titulo))
@@ -770,7 +805,6 @@ def page_clientes():
             email = st.text_input("Email", cli.email or "")
             tel = st.text_input("Telefone", cli.telefone or "")
 
-            # botão para buscar pelo CNPJ
             if st.button("Buscar dados pelo CNPJ", key="btn_buscar_cli_cnpj"):
                 info = buscar_cnpj_detalhado(doc)
                 if info:
@@ -1081,7 +1115,6 @@ def page_servicos():
 
 # =============================================================================
 # PÁGINA: EMITIR OS
-# fluxo: selecionar OS (nova ou existente) -> obra -> avisos -> itens -> salvar
 # =============================================================================
 def page_emitir_os():
     st.markdown("<h4>Emitir OS</h4>", unsafe_allow_html=True)
@@ -1092,7 +1125,6 @@ def page_emitir_os():
         servicos = sess.query(Servico).filter(Servico.ativo == 1).order_by(Servico.descricao.asc()).all()
         os_list = sess.query(OS).order_by(OS.id.desc()).limit(80).all()
 
-    # 1) escolher OS
     ops = ["(Nova OS)"] + [f"{o.id} — {o.numero} — {o.status}" for o in os_list]
     default_idx = 0
     if s.get("current_os_id"):
@@ -1112,7 +1144,6 @@ def page_emitir_os():
         os_db = None
         s["current_os_id"] = None
 
-    # 2) dados da OS
     obra_opc = [f"{o.id} — {o.nome}" for o in obras] or ["(Cadastre obras)"]
     if os_db:
         obra_idx = 0
@@ -1135,7 +1166,6 @@ def page_emitir_os():
     st.selectbox("Status", STATUS_OPTIONS, index=STATUS_OPTIONS.index(os_status) if os_status in STATUS_OPTIONS else 0, key="emit_os_status")
     os_obs_new = st.text_area("Observações", os_obs, height=110)
 
-    # avisos da obra
     obra_obj = next((o for o in obras if o.id == obra_id), None)
     if obra_obj:
         faltantes = []
@@ -1147,7 +1177,6 @@ def page_emitir_os():
         if faltantes:
             banner("warn", "Documentos da obra faltando: " + ", ".join(faltantes))
 
-    # botão SALVAR OS (cabeçalho)
     if st.button("Salvar OS", use_container_width=True):
         with SessionLocal() as sess:
             if modo_novo:
@@ -1175,7 +1204,7 @@ def page_emitir_os():
 
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # 3) itens da OS — só se já tiver OS salva
+    # Itens
     st.markdown("<div class='hb-card'>", unsafe_allow_html=True)
     st.markdown("### Itens da OS", unsafe_allow_html=True)
 
@@ -1184,9 +1213,7 @@ def page_emitir_os():
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    # dados para incluir item
     with SessionLocal() as sess:
-        # pegar preços específicos da obra
         precos_espec = {
             x.servico_id: x.preco_unit
             for x in sess.query(ObraServico).filter(ObraServico.obra_id == obra_id, ObraServico.ativo == 1).all()
@@ -1199,7 +1226,6 @@ def page_emitir_os():
     with col_q:
         qtd = st.number_input("Qtd", min_value=0.0, value=1.0, step=1.0, format="%.2f")
     with col_p:
-        # sugestão de preço pela obra
         srv_id_tmp = int(srv_sel.split("—", 1)[0].strip())
         preco_sugerido = precos_espec.get(srv_id_tmp, next((s.preco_unit for s in servicos if s.id == srv_id_tmp), 0.0) or 0.0)
         preco_in = st.number_input("Preço unit.", min_value=0.0, value=float(preco_sugerido), step=1.0, format="%.2f")
@@ -1211,7 +1237,6 @@ def page_emitir_os():
         srv_id = int(srv_sel.split("—", 1)[0].strip())
         with SessionLocal() as sess:
             os_obj = sess.get(OS, s["current_os_id"])
-            # preço final = digitado ou preço da obra ou preço do serviço
             prec_ob = (
                 sess.query(ObraServico)
                 .filter(ObraServico.obra_id == obra_id, ObraServico.servico_id == srv_id, ObraServico.ativo == 1)
@@ -1229,7 +1254,6 @@ def page_emitir_os():
         flash("success", "Serviço adicionado à OS.")
         _rerun()
 
-    # mostrar itens já adicionados
     with SessionLocal() as sess:
         os_row, obra_row, itens = obter_os_com_itens(sess, s["current_os_id"])
     st.markdown("#### Serviços já adicionados a esta OS")
@@ -1251,7 +1275,6 @@ def page_emitir_os():
     st.markdown("</div>", unsafe_allow_html=True)
 # =============================================================================
 # PÁGINA: VISUALIZAR / IMPRIMIR
-# com botão EDITAR (leva para Emitir OS) e EXCLUIR
 # =============================================================================
 def page_visualizar_imprimir():
     st.markdown("<h4>Visualizar / Imprimir</h4>", unsafe_allow_html=True)
@@ -1320,7 +1343,6 @@ def page_visualizar_imprimir():
     total = sum(it["subtotal"] for it in itens)
     st.markdown(f"<div class='hb-alert hb-alert-success'><b>Total estimado:</b> {format_brl(total)}</div>", unsafe_allow_html=True)
 
-    # tabela dos itens
     if itens:
         df_itens = pd.DataFrame(itens).rename(columns={
             "codigo":"Código","descricao":"Descrição","unidade":"Un","qtd_prev":"Qtd Prevista",
@@ -1345,7 +1367,6 @@ def page_visualizar_imprimir():
             flash("info", "Você pode editar a OS na aba Emitir OS.")
             _rerun()
 
-    # excluir OS
     st.markdown("<hr>", unsafe_allow_html=True)
     if st.button("Excluir esta OS", type="secondary"):
         with SessionLocal() as sess:
@@ -1359,7 +1380,7 @@ def page_visualizar_imprimir():
     st.markdown("</div>", unsafe_allow_html=True)
 
 # =============================================================================
-# PÁGINA: MEDIÇÃO MENSAL (organizada)
+# PÁGINA: MEDIÇÃO MENSAL
 # =============================================================================
 def page_medicao():
     st.markdown("<h4>Medição Mensal</h4>", unsafe_allow_html=True)
@@ -1378,7 +1399,6 @@ def page_medicao():
     obra_id = int(obra_sel.split("—", 1)[0].strip())
     obra_obj = next((o for o in obras if o.id == obra_id), None)
 
-    # OS em aberto
     with SessionLocal() as sess:
         os_abertas = (
             sess.query(OS)
@@ -1409,7 +1429,6 @@ def page_medicao():
 
     medicao_num = st.number_input("Número da medição", min_value=1, value=1, step=1)
 
-    # montar linhas
     linhas = []
     with SessionLocal() as sess:
         os_obra = (
@@ -1458,7 +1477,7 @@ def page_medicao():
     st.markdown("</div>", unsafe_allow_html=True)
 
 # =============================================================================
-# PÁGINA: RELATÓRIOS
+# RELATÓRIOS
 # =============================================================================
 def gerar_pdf_fechamento(cliente_nome: str, periodo_str: str, linhas: list[dict], signature_bytes: bytes | None = None) -> bytes:
     buf = io.BytesIO()
@@ -1634,7 +1653,6 @@ page = st.sidebar.radio("Ir para", MENU, index=0, label_visibility="collapsed")
 
 def main_router():
     flash_render()
-    # se veio do "editar OS" na tela de visualizar
     if s.get("goto_emitir"):
         s["goto_emitir"] = False
         page_emitir_os()
