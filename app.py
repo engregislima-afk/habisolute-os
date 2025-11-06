@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
+from __future__ import annotations
+
 # Habisolute — Sistema de OS (Streamlit)
 # versão com: PDF assinado + cadastro de obras completo + exportar excel + sidebar laranja
+# agora com: busca de endereço por CNPJ mais robusta + abas de anexos na tela de Obras
 
 import io, re, os, json, base64, tempfile, zipfile, hashlib, hmac, secrets, calendar
 from datetime import date, datetime
@@ -42,7 +45,6 @@ except Exception:
 # =============================================================================
 SYSTEM_NAME = "Habisolute — Sistema de OS"
 SYSTEM_CODE = "hab_os"
-
 BRAND_COLOR = "#f97316"  # laranja
 
 st.set_page_config(page_title=SYSTEM_NAME, layout="wide")
@@ -627,40 +629,63 @@ def _download_btn_if_exists(label: str, path_str: str | None) -> None:
     if p.exists() and p.is_file():
         st.download_button(label=label, data=p.read_bytes(), file_name=p.name, mime="application/octet-stream")
 
-# CNPJ -> endereço
+# CNPJ -> endereço (versão robusta)
 def buscar_cnpj_endereco(cnpj: str) -> dict | None:
+    """
+    Tenta pegar endereço do CNPJ em fontes públicas.
+    Retorna dict com pelo menos {"endereco": "..."} ou None.
+    """
     cnpj_limpo = re.sub(r"\D", "", cnpj or "")
-    if len(cnpj_limpo) != 14:
+    if len(cnpj_limpo) != 14 or requests is None:
         return None
-    if requests is None:
-        return None
+
     urls = [
         f"https://brasilapi.com.br/api/cnpj/v1/{cnpj_limpo}",
+        f"https://publica.cnpj.ws/cnpj/{cnpj_limpo}",
         f"https://receitaws.com.br/v1/cnpj/{cnpj_limpo}",
     ]
+
     for url in urls:
         try:
-            r = requests.get(url, timeout=6)
-            if r.status_code == 200:
-                data = r.json()
-                logradouro = data.get("logradouro") or ""
-                numero = data.get("numero") or ""
-                bairro = data.get("bairro") or ""
-                municipio = data.get("municipio") or data.get("cidade") or ""
-                uf = data.get("uf") or data.get("estado") or ""
-                cep = data.get("cep") or ""
-                pedacos = [
-                    logradouro.strip(),
-                    numero.strip(),
-                    bairro.strip(),
-                    municipio.strip(),
-                    uf.strip(),
-                    f"CEP {cep.strip()}" if cep else "",
-                ]
-                endereco = ", ".join([p for p in pedacos if p])
-                return {"endereco": endereco}
+            r = requests.get(url, timeout=7)
+            if r.status_code != 200:
+                continue
+            data = r.json()
+
+            logradouro = data.get("logradouro") or data.get("estabelecimento", {}).get("logradouro") or ""
+            numero = data.get("numero") or data.get("estabelecimento", {}).get("numero") or ""
+            bairro = data.get("bairro") or data.get("estabelecimento", {}).get("bairro") or ""
+            municipio = (
+                data.get("municipio")
+                or data.get("cidade")
+                or data.get("estabelecimento", {}).get("cidade")
+                or data.get("estabelecimento", {}).get("cidade_nome")
+                or ""
+            )
+            uf = data.get("uf") or data.get("estabelecimento", {}).get("estado") or ""
+            cep = data.get("cep") or data.get("estabelecimento", {}).get("cep") or ""
+
+            partes = [logradouro.strip()]
+            if numero:
+                partes.append(numero.strip())
+            if bairro:
+                partes.append(bairro.strip())
+            if municipio:
+                partes.append(municipio.strip())
+            if uf:
+                partes.append(uf.strip())
+            if cep:
+                partes.append(f"CEP {cep.strip()}")
+
+            endereco = ", ".join([p for p in partes if p])
+
+            return {
+                "endereco": endereco,
+                "razao_social": data.get("razao_social") or data.get("nome_fantasia") or data.get("nome") or "",
+            }
         except Exception:
             continue
+
     return None
 
 # =============================================================================
@@ -710,7 +735,7 @@ def gerar_pdf_os(os_row, obra_row, itens: list[dict], show_prices: bool, logo_by
     story = []
     story += _header_vertical_centralizado()
 
-    # info da obra em caixa
+    # info da obra
     with SessionLocal() as sss:
         cli = sss.get(Cliente, obra_row.cliente_id) if obra_row.cliente_id else None
 
@@ -783,7 +808,7 @@ def gerar_pdf_os(os_row, obra_row, itens: list[dict], show_prices: bool, logo_by
     story.append(Paragraph("Data: ____/____/______", ParagraphStyle("dt", parent=styleN, fontSize=10, alignment=TA_CENTER)))
     story.append(Spacer(1, 14))
 
-    # assinatura: cliente + laboratorista com imagem
+    # assinatura
     if signature_bytes:
         sig_img = Image(io.BytesIO(signature_bytes))
         sig_img.drawHeight = 12 * mm
@@ -811,10 +836,7 @@ def gerar_pdf_os(os_row, obra_row, itens: list[dict], show_prices: bool, logo_by
     ]))
     story.append(ass_tbl)
 
-    if signature_bytes:
-        doc.build(story, onFirstPage=lambda c,d:_on_page(c,d,""), onLaterPages=lambda c,d:_on_page(c,d,""))
-    else:
-        doc.build(story, onFirstPage=lambda c,d:_on_page(c,d,""), onLaterPages=lambda c,d:_on_page(c,d,""))
+    doc.build(story, onFirstPage=lambda c,d:_on_page(c,d,""), onLaterPages=lambda c,d:_on_page(c,d,""))
     return buf.getvalue()
 
 def gerar_pdf_medicao(obra_nome: str, periodo_str: str, linhas: list[dict], logo_bytes: bytes | None, medicao_num: int, signature_bytes: bytes | None = None) -> bytes:
@@ -913,6 +935,63 @@ def gerar_pdf_medicao(obra_nome: str, periodo_str: str, linhas: list[dict], logo
 
     doc.build(story, onFirstPage=lambda c,d:_on_page(c,d,titulo), onLaterPages=lambda c,d:_on_page(c,d,titulo))
     return buf.getvalue()
+
+def gerar_pdf_fechamento(cliente_nome: str, periodo_str: str, linhas: list[dict], logo_bytes: bytes | None, signature_bytes: bytes | None = None) -> bytes:
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=landscape(A4), topMargin=28, bottomMargin=40, leftMargin=14, rightMargin=14)
+    story = []
+    story += _header_vertical_centralizado()
+    info_tbl = Table([[Paragraph(f"<b>Cliente:</b> {cliente_nome}", styleSmall)],
+                      [Paragraph(f"<b>Período:</b> {periodo_str}", styleSmall)]], colWidths=[doc.width])
+    info_tbl.setStyle(TableStyle([
+        ("BOX",(0,0),(-1,-1),0.6,colors.black),
+        ("INNERGRID",(0,0),(-1,-1),0.3,colors.grey),
+        ("TOPPADDING",(0,0),(-1,-1),2),
+        ("BOTTOMPADDING",(0,0),(-1,-1),2),
+    ]))
+    story += [info_tbl, Spacer(1, 6)]
+    titulo = "FECHAMENTO POR CLIENTE"
+    tit_tbl = Table([[Paragraph(f"<b>{titulo}</b>", ParagraphStyle("titFEC", parent=styleN, fontSize=11, alignment=TA_CENTER))]], colWidths=[doc.width])
+    tit_tbl.setStyle(TableStyle([
+        ("BACKGROUND",(0,0),(-1,-1), colors.HexColor("#e6e6e6")),
+        ("BOX",(0,0),(-1,-1),0.5,colors.black),
+        ("TOPPADDING",(0,0),(-1,-1),6),
+        ("BOTTOMPADDING",(0,0),(-1,-1),6),
+    ]))
+    story += [tit_tbl, Spacer(1, 6)]
+
+    agreg = {}
+    for r in linhas:
+        key = (r.get("obra") or "-", r["codigo"], r["descricao"], r["un"])
+        acc = agreg.setdefault(key, {"qtd":0.0, "val":0.0})
+        acc["qtd"] += float(r.get("qtd", 0.0) or 0.0)
+        acc["val"] += float(r.get("subtotal", 0.0) or 0.0)
+    headers = ["Obra", "Código", "Descrição", "Un", "Qtd", "Subtotal"]
+    rows = [headers]; total = 0.0
+    for (obra, cod, desc, un), acc in sorted(agreg.items(), key=lambda x: (x[0][0], x[0][1])):
+        rows.append([obra, cod, desc, un, f"{acc['qtd']:.2f}", format_brl(acc["val"])])
+        total += acc["val"]
+    W = doc.width
+    tbl = Table(rows, colWidths=[0.28*W, 0.10*W, 0.34*W, 0.06*W, 0.10*W, 0.12*W], repeatRows=1)
+    tbl.setStyle(TableStyle([
+        ("BACKGROUND",(0,0),(-1,0), colors.black),
+        ("TEXTCOLOR",(0,0),(-1,0), colors.white),
+        ("GRID",(0,0),(-1,-1),0.25,colors.black),
+        ("ALIGN",(3,1),(5,-1),"RIGHT"),
+    ]))
+    story.append(tbl)
+    story.append(Spacer(1, 8))
+
+    total_box = Table([[Paragraph("<b>Total geral:</b>", styleN), Paragraph(f"<b>{format_brl(total)}</b>", styleN)]], colWidths=[36*mm, 42*mm])
+    total_box.setStyle(TableStyle([
+        ("GRID",(0,0),(-1,-1),0.75,colors.black),
+        ("ALIGN",(1,0),(1,0),"RIGHT"),
+    ]))
+    wrap = Table([[None, total_box]], colWidths=[doc.width-(36*mm+42*mm), (36*mm+42*mm)])
+    story.append(wrap)
+
+    doc.build(story, onFirstPage=lambda c,d:_on_page(c,d,titulo), onLaterPages=lambda c,d:_on_page(c,d,titulo))
+    return buf.getvalue()
 # ===================== PÁGINAS =====================
 
 def page_clientes():
@@ -969,6 +1048,7 @@ def page_clientes():
                 _rerun()
     st.markdown("</div>", unsafe_allow_html=True)
 
+
 def page_obras():
     st.markdown('<div class="section-title">Cadastro: Obras</div>', unsafe_allow_html=True)
     st.markdown('<div class="card">', unsafe_allow_html=True)
@@ -992,77 +1072,8 @@ def page_obras():
             obra_edit = sess.get(Obra, obra_id)
 
     with col_form:
-        if obra_edit:
-            st.subheader(f"Editar obra: {obra_edit.nome}")
-            obra_nome = st.text_input("Nome da obra", obra_edit.nome)
-            obra_end = st.text_area("Endereço", obra_edit.endereco or "", height=80)
-            cli_nomes = ["(sem cliente)"] + [c.nome for c in clientes]
-            cli_default = 0
-            if obra_edit.cliente_id:
-                for i, c in enumerate(clientes, start=1):
-                    if c.id == obra_edit.cliente_id:
-                        cli_default = i
-                        break
-            cli_sel = st.selectbox("Cliente", cli_nomes, index=cli_default)
-            ativo = st.checkbox("Obra ativa", value=(obra_edit.ativo == 1))
-            bloqueada = st.checkbox("Obra bloqueada", value=(obra_edit.bloqueada == 1))
-            motivo_bloq = st.text_input("Motivo (se bloqueada)", obra_edit.bloqueada_motivo or "")
-
-            cnpj_busca = st.text_input("CNPJ para buscar endereço", "")
-            if st.button("Buscar endereço pelo CNPJ", key="btn_buscar_cnpj"):
-                info = buscar_cnpj_endereco(cnpj_busca)
-                if info and info.get("endereco"):
-                    obra_end = info["endereco"]
-                    st.success("Endereço preenchido pelo CNPJ.")
-                else:
-                    st.warning("Não consegui pegar o endereço desse CNPJ.")
-
-            st.markdown("### Anexos da obra")
-            up_prop = st.file_uploader("Proposta", key="up_prop")
-            up_cont = st.file_uploader("Contrato", key="up_cont")
-            up_cnpj  = st.file_uploader("CNPJ", key="up_cnpj")
-            if up_prop is not None:
-                rel = _save_anexo(up_prop, obra_edit.id, "proposta")
-                with SessionLocal() as sess:
-                    ob = sess.get(Obra, obra_edit.id); ob.anexo_proposta = rel; sess.commit()
-                st.success("Proposta anexada.")
-            if up_cont is not None:
-                rel = _save_anexo(up_cont, obra_edit.id, "contrato")
-                with SessionLocal() as sess:
-                    ob = sess.get(Obra, obra_edit.id); ob.anexo_contrato = rel; sess.commit()
-                st.success("Contrato anexado.")
-            if up_cnpj is not None:
-                rel = _save_anexo(up_cnpj, obra_edit.id, "cnpj")
-                with SessionLocal() as sess:
-                    ob = sess.get(Obra, obra_edit.id); ob.anexo_cnpj = rel; sess.commit()
-                st.success("CNPJ anexado.")
-
-            st.markdown("#### Arquivos já enviados")
-            _download_btn_if_exists("Baixar proposta", obra_edit.anexo_proposta)
-            _download_btn_if_exists("Baixar contrato", obra_edit.anexo_contrato)
-            _download_btn_if_exists("Baixar CNPJ", obra_edit.anexo_cnpj)
-
-            if st.button("Salvar alterações", key="btn_save_obra"):
-                with SessionLocal() as sess:
-                    ob = sess.get(Obra, obra_edit.id)
-                    ob.nome = obra_nome
-                    ob.endereco = obra_end
-                    if cli_sel != "(sem cliente)":
-                        cli_obj = sess.query(Cliente).filter(Cliente.nome == cli_sel).first()
-                        ob.cliente_id = cli_obj.id if cli_obj else None
-                        ob.cliente = cli_obj.nome if cli_obj else None
-                    else:
-                        ob.cliente_id = None
-                        ob.cliente = None
-                    ob.ativo = 1 if ativo else 0
-                    ob.bloqueada = 1 if bloqueada else 0
-                    ob.bloqueada_motivo = motivo_bloq
-                    if bloqueada and not ob.bloqueada_desde:
-                        ob.bloqueada_desde = date.today()
-                    sess.commit()
-                st.success("Obra atualizada.")
-                _rerun()
-        else:
+        # NOVA OBRA
+        if not obra_edit:
             st.subheader("Nova obra")
             obra_nome = st.text_input("Nome da obra", "")
             obra_end = st.text_area("Endereço", "", height=80)
@@ -1083,60 +1094,142 @@ def page_obras():
                     sess.add(nova); sess.commit()
                 st.success("Obra criada.")
                 _rerun()
+        # EDITAR OBRA
+        else:
+            tab_dados, tab_anexos, tab_servicos = st.tabs(["Dados da obra", "Anexos", "Serviços da obra"])
+
+            # 1) DADOS
+            with tab_dados:
+                st.subheader(f"Editar obra: {obra_edit.nome}")
+                obra_nome = st.text_input("Nome da obra", obra_edit.nome, key="obra_nome_edit")
+                obra_end = st.text_area("Endereço", obra_edit.endereco or "", height=80, key="obra_end_edit")
+
+                cli_nomes = ["(sem cliente)"] + [c.nome for c in clientes]
+                cli_default = 0
+                if obra_edit.cliente_id:
+                    for i, c in enumerate(clientes, start=1):
+                        if c.id == obra_edit.cliente_id:
+                            cli_default = i
+                            break
+                cli_sel = st.selectbox("Cliente", cli_nomes, index=cli_default, key="obra_cli_edit")
+
+                ativo = st.checkbox("Obra ativa", value=(obra_edit.ativo == 1), key="obra_ativo_edit")
+                bloqueada = st.checkbox("Obra bloqueada", value=(obra_edit.bloqueada == 1), key="obra_bloq_edit")
+                motivo_bloq = st.text_input("Motivo (se bloqueada)", obra_edit.bloqueada_motivo or "", key="obra_bloq_motivo_edit")
+
+                st.divider()
+                cnpj_busca = st.text_input("CNPJ para buscar endereço", "", key="obra_cnpj_busca")
+                if st.button("Buscar endereço pelo CNPJ", key="btn_buscar_cnpj"):
+                    info = buscar_cnpj_endereco(cnpj_busca)
+                    if info and info.get("endereco"):
+                        obra_end = info["endereco"]
+                        st.success("Endereço preenchido pelo CNPJ.")
+                        st.code(info["endereco"])
+                    else:
+                        st.warning("Não consegui pegar o endereço desse CNPJ agora.")
+
+                if st.button("Salvar alterações", key="btn_save_obra"):
+                    with SessionLocal() as sess:
+                        ob = sess.get(Obra, obra_edit.id)
+                        ob.nome = obra_nome
+                        ob.endereco = obra_end
+                        if cli_sel != "(sem cliente)":
+                            cli_obj = sess.query(Cliente).filter(Cliente.nome == cli_sel).first()
+                            ob.cliente_id = cli_obj.id if cli_obj else None
+                            ob.cliente = cli_obj.nome if cli_obj else None
+                        else:
+                            ob.cliente_id = None
+                            ob.cliente = None
+                        ob.ativo = 1 if ativo else 0
+                        ob.bloqueada = 1 if bloqueada else 0
+                        ob.bloqueada_motivo = motivo_bloq
+                        if bloqueada and not ob.bloqueada_desde:
+                            ob.bloqueada_desde = date.today()
+                        sess.commit()
+                    st.success("Obra atualizada.")
+                    _rerun()
+
+            # 2) ANEXOS
+            with tab_anexos:
+                st.markdown("### Anexos da obra")
+                up_prop = st.file_uploader("Proposta", key="up_prop")
+                up_cont = st.file_uploader("Contrato", key="up_cont")
+                up_cnpj  = st.file_uploader("Cartão CNPJ", key="up_cnpj")
+
+                if up_prop is not None:
+                    rel = _save_anexo(up_prop, obra_edit.id, "proposta")
+                    with SessionLocal() as sess:
+                        ob = sess.get(Obra, obra_edit.id); ob.anexo_proposta = rel; sess.commit()
+                    st.success("Proposta anexada.")
+
+                if up_cont is not None:
+                    rel = _save_anexo(up_cont, obra_edit.id, "contrato")
+                    with SessionLocal() as sess:
+                        ob = sess.get(Obra, obra_edit.id); ob.anexo_contrato = rel; sess.commit()
+                    st.success("Contrato anexado.")
+
+                if up_cnpj is not None:
+                    rel = _save_anexo(up_cnpj, obra_edit.id, "cnpj")
+                    with SessionLocal() as sess:
+                        ob = sess.get(Obra, obra_edit.id); ob.anexo_cnpj = rel; sess.commit()
+                    st.success("CNPJ anexado.")
+
+                st.markdown("#### Arquivos já enviados")
+                _download_btn_if_exists("Baixar proposta", obra_edit.anexo_proposta)
+                _download_btn_if_exists("Baixar contrato", obra_edit.anexo_contrato)
+                _download_btn_if_exists("Baixar CNPJ", obra_edit.anexo_cnpj)
+
+            # 3) SERVIÇOS ESPECÍFICOS
+            with tab_servicos:
+                st.markdown("### Serviços específicos dessa obra")
+                with SessionLocal() as sess:
+                    obra_servs = sess.query(ObraServico).filter(
+                        ObraServico.obra_id == obra_edit.id,
+                        ObraServico.ativo == 1
+                    ).all()
+
+                c1, c2, c3 = st.columns([2, 1, 1])
+                with c1:
+                    srv_options = [f"{s.id} — {s.codigo} — {s.descricao}" for s in servicos_all]
+                    srv_sel = st.selectbox("Serviço", srv_options, key="obra_srv_sel")
+                with c2:
+                    preco_espec = st.number_input("Preço específico", min_value=0.0, value=0.0, step=1.0, format="%.2f", key="obra_srv_preco")
+                with c3:
+                    st.write("")
+                    if st.button("Vincular/atualizar serviço", key="btn_vinc_srv"):
+                        srv_id = int(srv_sel.split("—", 1)[0].strip())
+                        with SessionLocal() as sess:
+                            osrv = sess.query(ObraServico).filter(
+                                ObraServico.obra_id == obra_edit.id,
+                                ObraServico.servico_id == srv_id
+                            ).first()
+                            if osrv:
+                                osrv.preco_unit = preco_espec
+                                osrv.ativo = 1
+                            else:
+                                osrv = ObraServico(
+                                    obra_id=obra_edit.id,
+                                    servico_id=srv_id,
+                                    preco_unit=preco_espec,
+                                    ativo=1
+                                )
+                                sess.add(osrv)
+                            sess.commit()
+                        st.success("Serviço vinculado/atualizado.")
+                        _rerun()
+
+                if obra_servs:
+                    rows = []
+                    for osrv in obra_servs:
+                        serv_desc = next((f"{s.codigo} — {s.descricao}" for s in servicos_all if s.id == osrv.servico_id), str(osrv.servico_id))
+                        rows.append({"Serviço": serv_desc, "Preço específico": osrv.preco_unit or 0.0})
+                    df_os = pd.DataFrame(rows)
+                    st.dataframe(df_os, use_container_width=True)
+                else:
+                    st.info("Nenhum serviço específico vinculado.")
 
     st.markdown('</div>', unsafe_allow_html=True)
 
-    # serviços específicos da obra
-    if sel != "(Nova obra)" and obra_edit:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown("### Serviços específicos dessa obra")
-        with SessionLocal() as sess:
-            obra_servs = sess.query(ObraServico).filter(
-                ObraServico.obra_id == obra_edit.id,
-                ObraServico.ativo == 1
-            ).all()
-            servicos_all = sess.query(Servico).filter(Servico.ativo == 1).order_by(Servico.descricao.asc()).all()
-
-        c1, c2, c3 = st.columns([2, 1, 1])
-        with c1:
-            srv_options = [f"{s.id} — {s.codigo} — {s.descricao}" for s in servicos_all]
-            srv_sel = st.selectbox("Serviço", srv_options, key="obra_srv_sel")
-        with c2:
-            preco_espec = st.number_input("Preço específico", min_value=0.0, value=0.0, step=1.0, format="%.2f")
-        with c3:
-            st.write("")
-            if st.button("Vincular/atualizar serviço", key="btn_vinc_srv"):
-                srv_id = int(srv_sel.split("—", 1)[0].strip())
-                with SessionLocal() as sess:
-                    osrv = sess.query(ObraServico).filter(
-                        ObraServico.obra_id == obra_edit.id,
-                        ObraServico.servico_id == srv_id
-                    ).first()
-                    if osrv:
-                        osrv.preco_unit = preco_espec
-                        osrv.ativo = 1
-                    else:
-                        osrv = ObraServico(
-                            obra_id=obra_edit.id,
-                            servico_id=srv_id,
-                            preco_unit=preco_espec,
-                            ativo=1
-                        )
-                        sess.add(osrv)
-                    sess.commit()
-                st.success("Serviço vinculado/atualizado.")
-                _rerun()
-
-        if obra_servs:
-            rows = []
-            for osrv in obra_servs:
-                serv_desc = next((f"{s.codigo} — {s.descricao}" for s in servicos_all if s.id == osrv.servico_id), str(osrv.servico_id))
-                rows.append({"Serviço": serv_desc, "Preço específico": osrv.preco_unit or 0.0})
-            df_os = pd.DataFrame(rows)
-            st.dataframe(df_os, use_container_width=True)
-        else:
-            st.info("Nenhum serviço específico vinculado.")
-        st.markdown('</div>', unsafe_allow_html=True)
 
 def page_servicos():
     st.markdown('<div class="section-title">Cadastro: Serviços</div>', unsafe_allow_html=True)
@@ -1187,6 +1280,7 @@ def page_servicos():
                 _rerun()
     st.markdown('</div>', unsafe_allow_html=True)
 
+
 def obter_os_com_itens(sess: Session, os_id: int):
     os_row = sess.query(OS).options(selectinload(OS.itens).selectinload(OSItem.servico)).filter(OS.id == os_id).first()
     obra_row = sess.get(Obra, os_row.obra_id)
@@ -1203,6 +1297,7 @@ def obter_os_com_itens(sess: Session, os_id: int):
             "subtotal": preco * (it.quantidade_prevista or 0.0),
         })
     return os_row, obra_row, itens
+
 
 def page_emitir_os():
     st.markdown('<div class="section-title">Emitir OS</div>', unsafe_allow_html=True)
@@ -1226,7 +1321,6 @@ def page_emitir_os():
         os_db = None
         modo_novo = True
 
-    # formulário
     obra_opc = [f"{o.id} — {o.nome}" for o in obras]
     if modo_novo:
         obra_idx = 0
@@ -1297,7 +1391,6 @@ def page_emitir_os():
         obra_id = int(obra_sel.split("—", 1)[0].strip())
         with SessionLocal() as sess:
             os_obj = sess.get(OS, os_db.id)
-            # pegar preço específico da obra
             ospec = (
                 sess.query(ObraServico)
                 .filter(ObraServico.obra_id == obra_id, ObraServico.servico_id == srv_id, ObraServico.ativo == 1)
@@ -1332,6 +1425,7 @@ def page_emitir_os():
         else:
             st.info("Esta OS ainda não tem itens.")
     st.markdown('</div>', unsafe_allow_html=True)
+
 
 def page_visualizar_imprimir():
     st.markdown('<div class="section-title">Visualizar / Imprimir</div>', unsafe_allow_html=True)
@@ -1380,7 +1474,6 @@ def page_visualizar_imprimir():
         os_row_db = sess.query(OS).filter(OS.id == int(row["id"])).first()
         os_row, obra_row, itens = obter_os_com_itens(sess, os_row_db.id)
 
-    # informações
     st.write(f"**OS:** {os_row.numero}")
     st.write(f"**Data:** {os_row.data_emissao.strftime('%d/%m/%Y')}")
     st.write(f"**Obra:** {obra_row.nome}")
@@ -1412,7 +1505,6 @@ def page_visualizar_imprimir():
         st.download_button("Baixar PDF (cliente — sem preços)", data=pdf_cliente, file_name=f"{os_row.numero}_cliente.pdf", mime="application/pdf")
 
     st.markdown('</div>', unsafe_allow_html=True)
-
 def page_medicao():
     st.markdown('<div class="section-title">Medição Mensal</div>', unsafe_allow_html=True)
     st.markdown('<div class="card">', unsafe_allow_html=True)
@@ -1428,7 +1520,7 @@ def page_medicao():
     obra_id = int(obra_sel.split("—", 1)[0].strip())
     periodo = st.date_input("Período da medição", value=(date.today().replace(day=1), date.today()))
     ini, fim = periodo
-    # puxar OS da obra dentro do período
+
     linhas = []
     with SessionLocal() as sess:
         os_obra = (
@@ -1466,6 +1558,8 @@ def page_medicao():
     else:
         st.info("Nenhuma OS dessa obra no período.")
     st.markdown('</div>', unsafe_allow_html=True)
+
+
 def page_relatorios():
     st.markdown('<div class="section-title">Relatórios</div>', unsafe_allow_html=True)
     st.markdown('<div class="card">', unsafe_allow_html=True)
@@ -1520,62 +1614,6 @@ def page_relatorios():
         st.info("Nada a mostrar nesse período.")
     st.markdown('</div>', unsafe_allow_html=True)
 
-def gerar_pdf_fechamento(cliente_nome: str, periodo_str: str, linhas: list[dict], logo_bytes: bytes | None, signature_bytes: bytes | None = None) -> bytes:
-    buf = io.BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=landscape(A4), topMargin=28, bottomMargin=40, leftMargin=14, rightMargin=14)
-    story = []
-    story += _header_vertical_centralizado()
-    info_tbl = Table([[Paragraph(f"<b>Cliente:</b> {cliente_nome}", styleSmall)],
-                      [Paragraph(f"<b>Período:</b> {periodo_str}", styleSmall)]], colWidths=[doc.width])
-    info_tbl.setStyle(TableStyle([
-        ("BOX",(0,0),(-1,-1),0.6,colors.black),
-        ("INNERGRID",(0,0),(-1,-1),0.3,colors.grey),
-        ("TOPPADDING",(0,0),(-1,-1),2),
-        ("BOTTOMPADDING",(0,0),(-1,-1),2),
-    ]))
-    story += [info_tbl, Spacer(1, 6)]
-    titulo = "FECHAMENTO POR CLIENTE"
-    tit_tbl = Table([[Paragraph(f"<b>{titulo}</b>", ParagraphStyle("titFEC", parent=styleN, fontSize=11, alignment=TA_CENTER))]], colWidths=[doc.width])
-    tit_tbl.setStyle(TableStyle([
-        ("BACKGROUND",(0,0),(-1,-1), colors.HexColor("#e6e6e6")),
-        ("BOX",(0,0),(-1,-1),0.5,colors.black),
-        ("TOPPADDING",(0,0),(-1,-1),6),
-        ("BOTTOMPADDING",(0,0),(-1,-1),6),
-    ]))
-    story += [tit_tbl, Spacer(1, 6)]
-
-    agreg = {}
-    for r in linhas:
-        key = (r.get("obra") or "-", r["codigo"], r["descricao"], r["un"])
-        acc = agreg.setdefault(key, {"qtd":0.0, "val":0.0})
-        acc["qtd"] += float(r.get("qtd", 0.0) or 0.0)
-        acc["val"] += float(r.get("subtotal", 0.0) or 0.0)
-    headers = ["Obra", "Código", "Descrição", "Un", "Qtd", "Subtotal"]
-    rows = [headers]; total = 0.0
-    for (obra, cod, desc, un), acc in sorted(agreg.items(), key=lambda x: (x[0][0], x[0][1])):
-        rows.append([obra, cod, desc, un, f"{acc['qtd']:.2f}", format_brl(acc["val"])])
-        total += acc["val"]
-    W = doc.width
-    tbl = Table(rows, colWidths=[0.28*W, 0.10*W, 0.34*W, 0.06*W, 0.10*W, 0.12*W], repeatRows=1)
-    tbl.setStyle(TableStyle([
-        ("BACKGROUND",(0,0),(-1,0), colors.black),
-        ("TEXTCOLOR",(0,0),(-1,0), colors.white),
-        ("GRID",(0,0),(-1,-1),0.25,colors.black),
-        ("ALIGN",(3,1),(5,-1),"RIGHT"),
-    ]))
-    story.append(tbl)
-    story.append(Spacer(1, 8))
-
-    total_box = Table([[Paragraph("<b>Total geral:</b>", styleN), Paragraph(f"<b>{format_brl(total)}</b>", styleN)]], colWidths=[36*mm, 42*mm])
-    total_box.setStyle(TableStyle([
-        ("GRID",(0,0),(-1,-1),0.75,colors.black),
-        ("ALIGN",(1,0),(1,0),"RIGHT"),
-    ]))
-    wrap = Table([[None, total_box]], colWidths=[doc.width-(36*mm+42*mm), (36*mm+42*mm)])
-    story.append(wrap)
-
-    doc.build(story, onFirstPage=lambda c,d:_on_page(c,d,titulo), onLaterPages=lambda c,d:_on_page(c,d,titulo))
-    return buf.getvalue()
 
 # ====== EXPORTAÇÃO COM EXCEL (fallback CSV) ======
 def make_os_excel_per_obras() -> tuple[bytes, str, str]:
@@ -1596,15 +1634,14 @@ def make_os_excel_per_obras() -> tuple[bytes, str, str]:
             "Cliente": cli.nome if cli else (obra.cliente if obra else ""),
         })
     df = pd.DataFrame(data)
-    # tentar excel
     try:
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine="openpyxl", datetime_format="DD/MM/YYYY") as writer:
             df.to_excel(writer, sheet_name="OS", index=False)
         return output.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "os_por_obras.xlsx"
     except Exception:
-        # fallback para CSV
         return df.to_csv(index=False).encode("utf-8-sig"), "text/csv", "os_por_obras.csv"
+
 
 def page_export():
     st.markdown('<div class="section-title">Exportações</div>', unsafe_allow_html=True)
@@ -1627,6 +1664,7 @@ def page_export():
         sig = load_signature_bytes()
         if sig:
             st.image(sig, caption="Assinatura atual", width=180)
+
 
 # ===================== MENU / ROUTER =====================
 st.sidebar.markdown("###  Sistema OS", unsafe_allow_html=True)
