@@ -2,13 +2,12 @@
 from __future__ import annotations
 
 # Habisolute — Sistema de OS (Streamlit)
-# versão: PDF assinado + cadastro completo + exportar excel + sidebar laranja
-# agora: cliente com endereço + busca CNPJ; obra com CNPJ/CPF + busca CNPJ; abas de anexos
+# versão: cliente com endereço + busca CNPJ, obra com CNPJ/CPF + busca CNPJ, anexos, PDFs
 
-import io, re, os, json, base64, tempfile, zipfile, hashlib, calendar
+import io, re, os, json, zipfile, hashlib
 from datetime import date, datetime
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 import streamlit as st
 import pandas as pd
@@ -44,7 +43,7 @@ except Exception:
 # =============================================================================
 SYSTEM_NAME = "Habisolute — Sistema de OS"
 SYSTEM_CODE = "hab_os"
-BRAND_COLOR = "#f97316"  # laranja
+BRAND_COLOR = "#f97316"
 
 st.set_page_config(page_title=SYSTEM_NAME, layout="wide")
 
@@ -100,32 +99,6 @@ def log_event(action: str, meta: Dict[str, Any] | None = None, level: str = "INF
     except Exception:
         pass
 
-def read_audit_df() -> pd.DataFrame:
-    if not AUDIT_LOG.exists():
-        return pd.DataFrame(columns=["ts","user","level","action","meta","system"])
-    rows = []
-    with AUDIT_LOG.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-                rows.append({
-                    "ts": rec.get("ts"),
-                    "user": rec.get("user"),
-                    "level": rec.get("level"),
-                    "action": rec.get("action"),
-                    "meta": json.dumps(rec.get("meta") or {}, ensure_ascii=False),
-                    "system": rec.get("system", ""),
-                })
-            except Exception:
-                continue
-    df = pd.DataFrame(rows, columns=["ts","user","level","action","meta","system"])
-    if not df.empty:
-        df = df.sort_values("ts", ascending=False).reset_index(drop=True)
-    return df
-
 # =============================================================================
 # Estado
 # =============================================================================
@@ -151,7 +124,6 @@ def _rerun():
 # Auth simples (JSON)
 # =============================================================================
 def _hash_password_simple(pw: str) -> str:
-    import hashlib
     return hashlib.sha256((f"{SYSTEM_CODE}|" + pw).encode("utf-8")).hexdigest()
 
 def _save_users(data: Dict[str, Any]) -> None:
@@ -295,7 +267,7 @@ def _render_header():
     st.markdown(f"<div class='card' style='padding:.8rem 1rem;'><b>🏗️ {SYSTEM_NAME}</b></div>", unsafe_allow_html=True)
 
 # =============================================================================
-# Assinatura digital
+# Assinatura
 # =============================================================================
 def save_signature_file(uploaded_file) -> bool:
     if uploaded_file is None:
@@ -309,7 +281,7 @@ def load_signature_bytes() -> bytes | None:
     return None
 
 # =============================================================================
-# Login gate
+# Login / gate
 # =============================================================================
 def _auth_login_ui():
     st.markdown("<div class='card'>", unsafe_allow_html=True)
@@ -360,7 +332,6 @@ def _force_change_password_ui(username: str):
             _rerun()
     st.markdown("</div>", unsafe_allow_html=True)
 
-# gate
 if not s["logged_in"]:
     _auth_login_ui()
     flash_render()
@@ -412,7 +383,7 @@ class Cliente(Base):
     id = Column(Integer, primary_key=True)
     nome = Column(String, nullable=False, unique=True)
     documento = Column(String)
-    endereco = Column(String)           # novo
+    endereco = Column(String)  # novo
     contato = Column(String)
     email = Column(String)
     telefone = Column(String)
@@ -427,7 +398,7 @@ class Obra(Base):
     id = Column(Integer, primary_key=True)
     nome = Column(String, nullable=False)
     endereco = Column(String, nullable=False)
-    documento = Column(String)          # novo (CNPJ/CPF da obra)
+    documento = Column(String)  # CNPJ/CPF da obra
     cliente = Column(String)
     cliente_id = Column(Integer, ForeignKey("clientes.id"))
     ativo = Column(Integer, default=1)
@@ -609,12 +580,10 @@ def _download_btn_if_exists(label: str, path_str: str | None) -> None:
     if p.exists() and p.is_file():
         st.download_button(label=label, data=p.read_bytes(), file_name=p.name, mime="application/octet-stream")
 
-# CNPJ -> dados completos
+# =============================================================================
+# CNPJ
+# =============================================================================
 def buscar_cnpj_endereco(cnpj: str) -> dict | None:
-    """
-    Busca dados básicos do CNPJ em fontes públicas.
-    Retorna dict com: razao_social, nome_fantasia, endereco, email, telefone
-    """
     cnpj_limpo = re.sub(r"\D", "", cnpj or "")
     if len(cnpj_limpo) != 14 or requests is None:
         return None
@@ -632,8 +601,15 @@ def buscar_cnpj_endereco(cnpj: str) -> dict | None:
                 continue
             data = r.json()
 
-            est = data.get("estabelecimento", {}) or {}
-            razao = data.get("razao_social") or data.get("nome") or data.get("razao") or ""
+            est = data.get("estabelecimento") or {}
+
+            razao = (
+                data.get("razao_social")
+                or data.get("nome")
+                or data.get("razao")
+                or data.get("nome_empresarial")
+                or ""
+            )
             fantasia = data.get("nome_fantasia") or data.get("fantasia") or ""
 
             logradouro = data.get("logradouro") or est.get("logradouro") or ""
@@ -649,21 +625,22 @@ def buscar_cnpj_endereco(cnpj: str) -> dict | None:
             uf = data.get("uf") or est.get("estado") or ""
             cep = data.get("cep") or est.get("cep") or ""
 
-            partes = [logradouro.strip()]
-            if numero:
-                partes.append(numero.strip())
-            if bairro:
-                partes.append(bairro.strip())
-            if municipio:
-                partes.append(municipio.strip())
-            if uf:
-                partes.append(uf.strip())
-            if cep:
-                partes.append(f"CEP {cep.strip()}")
-            endereco = ", ".join([p for p in partes if p])
+            pedacos = []
+            if logradouro: pedacos.append(logradouro.strip())
+            if numero: pedacos.append(numero.strip())
+            if bairro: pedacos.append(bairro.strip())
+            if municipio: pedacos.append(municipio.strip())
+            if uf: pedacos.append(uf.strip())
+            if cep: pedacos.append(f"CEP {cep.strip()}")
+            endereco = ", ".join(pedacos)
 
             email = data.get("email") or est.get("email") or ""
-            telefone = data.get("telefone") or est.get("telefone1") or est.get("telefone") or ""
+            telefone = (
+                data.get("telefone")
+                or est.get("telefone1")
+                or est.get("telefone")
+                or ""
+            )
 
             return {
                 "razao_social": razao,
@@ -671,6 +648,7 @@ def buscar_cnpj_endereco(cnpj: str) -> dict | None:
                 "endereco": endereco,
                 "email": email,
                 "telefone": telefone,
+                "_raw": data,
             }
         except Exception:
             continue
@@ -724,7 +702,6 @@ def gerar_pdf_os(os_row, obra_row, itens: list[dict], show_prices: bool, logo_by
     story = []
     story += _header_vertical_centralizado()
 
-    # info da obra em caixa
     with SessionLocal() as sss:
         cli = sss.get(Cliente, obra_row.cliente_id) if obra_row.cliente_id else None
 
@@ -979,14 +956,13 @@ def gerar_pdf_fechamento(cliente_nome: str, periodo_str: str, linhas: list[dict]
 
     doc.build(story, onFirstPage=lambda c,d:_on_page(c,d,titulo), onLaterPages=lambda c,d:_on_page(c,d,titulo))
     return buf.getvalue()
-# ===================== PÁGINAS =====================
 
+# =============================================================================
+# PÁGINAS
+# =============================================================================
 def page_clientes():
     st.markdown('<div class="section-title">Cadastro: Clientes</div>', unsafe_allow_html=True)
     st.markdown('<div class="card">', unsafe_allow_html=True)
-
-    if "cli_cnpj_data" not in st.session_state:
-        st.session_state["cli_cnpj_data"] = {}
 
     with SessionLocal() as sess:
         clientes = sess.query(Cliente).order_by(Cliente.nome.asc()).all()
@@ -997,7 +973,7 @@ def page_clientes():
         sel = st.selectbox("Selecione", lista, label_visibility="collapsed", key="cli_sel")
 
     with col_form:
-        # EDITAR CLIENTE
+        # editar
         if sel != "(Novo cliente)":
             cli_id = int(sel.split("—", 1)[0].strip())
             with SessionLocal() as sess:
@@ -1009,42 +985,32 @@ def page_clientes():
             contato = st.text_input("Contato", cli.contato or "", key="cli_contato")
             email = st.text_input("Email", cli.email or "", key="cli_email")
             tel = st.text_input("Telefone", cli.telefone or "", key="cli_tel")
-            ativo = st.checkbox("Ativo", value=(cli.ativo == 1))
+            ativo = st.checkbox("Ativo", value=(cli.ativo == 1), key="cli_ativo")
 
-            if st.button("Buscar pelo CNPJ", key="cli_buscar_cnpj_btn"):
-                info = buscar_cnpj_endereco(documento)
+            if st.button("Buscar pelo CNPJ", key="cli_busca_btn"):
+                info = buscar_cnpj_endereco(st.session_state["cli_doc"])
                 if info:
-                    st.session_state["cli_cnpj_data"] = info
-                    _rerun()
+                    st.session_state["cli_nome"] = info.get("razao_social") or info.get("nome_fantasia") or st.session_state["cli_nome"]
+                    st.session_state["cli_end"] = info.get("endereco") or st.session_state["cli_end"]
+                    st.session_state["cli_email"] = info.get("email") or st.session_state["cli_email"]
+                    st.session_state["cli_tel"] = info.get("telefone") or st.session_state["cli_tel"]
+                    st.success("Dados do CNPJ carregados.")
                 else:
                     st.warning("Não consegui consultar esse CNPJ agora.")
 
-            cnpj_data = st.session_state.get("cli_cnpj_data") or {}
-            if cnpj_data:
-                if not nome:
-                    nome = cnpj_data.get("razao_social") or cnpj_data.get("nome_fantasia") or nome
-                if not endereco:
-                    endereco = cnpj_data.get("endereco") or endereco
-                if not email:
-                    email = cnpj_data.get("email") or email
-                if not tel:
-                    tel = cnpj_data.get("telefone") or tel
-
-            if st.button("Salvar cliente"):
+            if st.button("Salvar cliente", key="cli_save_btn"):
                 with SessionLocal() as sess:
                     c = sess.get(Cliente, cli_id)
-                    c.nome = nome
-                    c.documento = documento
-                    c.endereco = endereco
-                    c.contato = contato
-                    c.email = email
-                    c.telefone = tel
-                    c.ativo = 1 if ativo else 0
+                    c.nome = st.session_state["cli_nome"]
+                    c.documento = st.session_state["cli_doc"]
+                    c.endereco = st.session_state["cli_end"]
+                    c.contato = st.session_state["cli_contato"]
+                    c.email = st.session_state["cli_email"]
+                    c.telefone = st.session_state["cli_tel"]
+                    c.ativo = 1 if st.session_state["cli_ativo"] else 0
                     sess.commit()
                 st.success("Cliente atualizado.")
-                _rerun()
-
-        # NOVO CLIENTE
+        # novo
         else:
             nome = st.text_input("Nome / Razão Social", "", key="cli_nome_new")
             documento = st.text_input("CNPJ/CPF", "", key="cli_doc_new")
@@ -1053,40 +1019,31 @@ def page_clientes():
             email = st.text_input("Email", "", key="cli_email_new")
             tel = st.text_input("Telefone", "", key="cli_tel_new")
 
-            if st.button("Buscar pelo CNPJ", key="cli_buscar_cnpj_new"):
-                info = buscar_cnpj_endereco(documento)
+            if st.button("Buscar pelo CNPJ", key="cli_busca_new"):
+                info = buscar_cnpj_endereco(st.session_state["cli_doc_new"])
                 if info:
-                    st.session_state["cli_cnpj_data"] = info
-                    _rerun()
+                    st.session_state["cli_nome_new"] = info.get("razao_social") or info.get("nome_fantasia") or st.session_state["cli_nome_new"]
+                    st.session_state["cli_end_new"] = info.get("endereco") or st.session_state["cli_end_new"]
+                    st.session_state["cli_email_new"] = info.get("email") or st.session_state["cli_email_new"]
+                    st.session_state["cli_tel_new"] = info.get("telefone") or st.session_state["cli_tel_new"]
+                    st.success("Dados do CNPJ carregados.")
                 else:
                     st.warning("Não consegui consultar esse CNPJ agora.")
-
-            cnpj_data = st.session_state.get("cli_cnpj_data") or {}
-            if cnpj_data:
-                if not nome:
-                    nome = cnpj_data.get("razao_social") or cnpj_data.get("nome_fantasia") or ""
-                if not endereco:
-                    endereco = cnpj_data.get("endereco") or ""
-                if not email:
-                    email = cnpj_data.get("email") or ""
-                if not tel:
-                    tel = cnpj_data.get("telefone") or ""
 
             if st.button("Criar cliente", key="cli_create_btn"):
                 with SessionLocal() as sess:
                     c = Cliente(
-                        nome=nome,
-                        documento=documento,
-                        endereco=endereco,
-                        contato=contato,
-                        email=email,
-                        telefone=tel,
+                        nome=st.session_state["cli_nome_new"],
+                        documento=st.session_state["cli_doc_new"],
+                        endereco=st.session_state["cli_end_new"],
+                        contato=st.session_state["cli_cont_new"],
+                        email=st.session_state["cli_email_new"],
+                        telefone=st.session_state["cli_tel_new"],
                         ativo=1,
                     )
                     sess.add(c)
                     sess.commit()
                 st.success("Cliente criado.")
-                _rerun()
 
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -1114,8 +1071,8 @@ def page_obras():
             obra_edit = sess.get(Obra, obra_id)
 
     with col_form:
-        # NOVA OBRA
-        if not obra_edit:
+        # nova obra
+        if obra_edit is None:
             st.subheader("Nova obra")
             obra_nome = st.text_input("Nome da obra", "", key="obra_nome_new")
             documento_obra = st.text_input("CNPJ/CPF da obra", "", key="obra_doc_new")
@@ -1124,20 +1081,19 @@ def page_obras():
             cli_sel = st.selectbox("Cliente", cli_nomes, index=0, key="obra_cli_new")
 
             if st.button("Buscar endereço pelo CNPJ", key="btn_buscar_cnpj_obra_new"):
-                info = buscar_cnpj_endereco(documento_obra)
+                info = buscar_cnpj_endereco(st.session_state["obra_doc_new"])
                 if info and info.get("endereco"):
-                    obra_end = info["endereco"]
+                    st.session_state["obra_end_new"] = info["endereco"]
                     st.success("Endereço preenchido pelo CNPJ.")
-                    st.code(info["endereco"])
                 else:
                     st.warning("Não consegui pegar o endereço desse CNPJ agora.")
 
             if st.button("Salvar nova obra", key="btn_nova_obra"):
                 with SessionLocal() as sess:
                     nova = Obra(
-                        nome=obra_nome,
-                        endereco=obra_end,
-                        documento=documento_obra,
+                        nome=st.session_state["obra_nome_new"],
+                        endereco=st.session_state["obra_end_new"],
+                        documento=st.session_state["obra_doc_new"],
                         cliente=cli_sel if cli_sel != "(sem cliente)" else None,
                         ativo=1,
                     )
@@ -1148,16 +1104,19 @@ def page_obras():
                     sess.add(nova); sess.commit()
                 st.success("Obra criada.")
                 _rerun()
-        # EDITAR OBRA
+        # editar obra
         else:
             tab_dados, tab_anexos, tab_servicos = st.tabs(["Dados da obra", "Anexos", "Serviços da obra"])
 
-            # 1) DADOS
             with tab_dados:
                 st.subheader(f"Editar obra: {obra_edit.nome}")
-                obra_nome = st.text_input("Nome da obra", obra_edit.nome, key="obra_nome_edit")
-                documento_obra = st.text_input("CNPJ/CPF da obra", obra_edit.documento or "", key="obra_doc_edit")
-                obra_end = st.text_area("Endereço", obra_edit.endereco or "", height=80, key="obra_end_edit")
+                nome_key = f"obra_nome_edit_{obra_edit.id}"
+                doc_key = f"obra_doc_edit_{obra_edit.id}"
+                end_key = f"obra_end_edit_{obra_edit.id}"
+
+                obra_nome = st.text_input("Nome da obra", obra_edit.nome, key=nome_key)
+                documento_obra = st.text_input("CNPJ/CPF da obra", obra_edit.documento or "", key=doc_key)
+                obra_end = st.text_area("Endereço", obra_edit.endereco or "", height=80, key=end_key)
 
                 cli_nomes = ["(sem cliente)"] + [c.nome for c in clientes]
                 cli_default = 0
@@ -1166,46 +1125,44 @@ def page_obras():
                         if c.id == obra_edit.cliente_id:
                             cli_default = i
                             break
-                cli_sel = st.selectbox("Cliente", cli_nomes, index=cli_default, key="obra_cli_edit")
+                cli_sel = st.selectbox("Cliente", cli_nomes, index=cli_default, key=f"obra_cli_edit_{obra_edit.id}")
 
-                ativo = st.checkbox("Obra ativa", value=(obra_edit.ativo == 1), key="obra_ativo_edit")
-                bloqueada = st.checkbox("Obra bloqueada", value=(obra_edit.bloqueada == 1), key="obra_bloq_edit")
-                motivo_bloq = st.text_input("Motivo (se bloqueada)", obra_edit.bloqueada_motivo or "", key="obra_bloq_motivo_edit")
+                ativo = st.checkbox("Obra ativa", value=(obra_edit.ativo == 1), key=f"obra_ativo_edit_{obra_edit.id}")
+                bloqueada = st.checkbox("Obra bloqueada", value=(obra_edit.bloqueada == 1), key=f"obra_bloq_edit_{obra_edit.id}")
+                motivo_bloq = st.text_input("Motivo (se bloqueada)", obra_edit.bloqueada_motivo or "", key=f"obra_bloq_motivo_edit_{obra_edit.id}")
 
                 st.divider()
-                cnpj_busca = st.text_input("CNPJ para buscar endereço e contato", documento_obra, key="obra_cnpj_busca")
-                if st.button("Buscar endereço pelo CNPJ", key="btn_buscar_cnpj_obra"):
-                    info = buscar_cnpj_endereco(cnpj_busca)
+                if st.button("Buscar endereço pelo CNPJ", key=f"btn_buscar_cnpj_obra_{obra_edit.id}"):
+                    info = buscar_cnpj_endereco(st.session_state[doc_key])
                     if info and info.get("endereco"):
-                        obra_end = info["endereco"]
+                        st.session_state[end_key] = info["endereco"]
                         st.success("Endereço preenchido pelo CNPJ.")
-                        st.code(info["endereco"])
                     else:
                         st.warning("Não consegui pegar o endereço desse CNPJ agora.")
 
-                if st.button("Salvar alterações", key="btn_save_obra"):
+                if st.button("Salvar alterações", key=f"btn_save_obra_{obra_edit.id}"):
                     with SessionLocal() as sess:
                         ob = sess.get(Obra, obra_edit.id)
-                        ob.nome = obra_nome
-                        ob.documento = documento_obra
-                        ob.endereco = obra_end
-                        if cli_sel != "(sem cliente)":
-                            cli_obj = sess.query(Cliente).filter(Cliente.nome == cli_sel).first()
+                        ob.nome = st.session_state[nome_key]
+                        ob.documento = st.session_state[doc_key]
+                        ob.endereco = st.session_state[end_key]
+                        cli_sel_val = st.session_state[f"obra_cli_edit_{obra_edit.id}"]
+                        if cli_sel_val != "(sem cliente)":
+                            cli_obj = sess.query(Cliente).filter(Cliente.nome == cli_sel_val).first()
                             ob.cliente_id = cli_obj.id if cli_obj else None
                             ob.cliente = cli_obj.nome if cli_obj else None
                         else:
                             ob.cliente_id = None
                             ob.cliente = None
-                        ob.ativo = 1 if ativo else 0
-                        ob.bloqueada = 1 if bloqueada else 0
-                        ob.bloqueada_motivo = motivo_bloq
-                        if bloqueada and not ob.bloqueada_desde:
+                        ob.ativo = 1 if st.session_state[f"obra_ativo_edit_{obra_edit.id}"] else 0
+                        ob.bloqueada = 1 if st.session_state[f"obra_bloq_edit_{obra_edit.id}"] else 0
+                        ob.bloqueada_motivo = st.session_state[f"obra_bloq_motivo_edit_{obra_edit.id}"]
+                        if ob.bloqueada and not ob.bloqueada_desde:
                             ob.bloqueada_desde = date.today()
                         sess.commit()
                     st.success("Obra atualizada.")
                     _rerun()
 
-            # 2) ANEXOS
             with tab_anexos:
                 st.markdown("### Anexos da obra")
                 up_prop = st.file_uploader("Proposta", key="up_prop")
@@ -1217,13 +1174,11 @@ def page_obras():
                     with SessionLocal() as sess:
                         ob = sess.get(Obra, obra_edit.id); ob.anexo_proposta = rel; sess.commit()
                     st.success("Proposta anexada.")
-
                 if up_cont is not None:
                     rel = _save_anexo(up_cont, obra_edit.id, "contrato")
                     with SessionLocal() as sess:
                         ob = sess.get(Obra, obra_edit.id); ob.anexo_contrato = rel; sess.commit()
                     st.success("Contrato anexado.")
-
                 if up_cnpj is not None:
                     rel = _save_anexo(up_cnpj, obra_edit.id, "cnpj")
                     with SessionLocal() as sess:
@@ -1235,7 +1190,6 @@ def page_obras():
                 _download_btn_if_exists("Baixar contrato", obra_edit.anexo_contrato)
                 _download_btn_if_exists("Baixar CNPJ", obra_edit.anexo_cnpj)
 
-            # 3) SERVIÇOS
             with tab_servicos:
                 st.markdown("### Serviços específicos dessa obra")
                 with SessionLocal() as sess:
@@ -1551,6 +1505,8 @@ def page_visualizar_imprimir():
         st.download_button("Baixar PDF (cliente — sem preços)", data=pdf_cliente, file_name=f"{os_row.numero}_cliente.pdf", mime="application/pdf")
 
     st.markdown('</div>', unsafe_allow_html=True)
+
+
 def page_medicao():
     st.markdown('<div class="section-title">Medição Mensal</div>', unsafe_allow_html=True)
     st.markdown('<div class="card">', unsafe_allow_html=True)
