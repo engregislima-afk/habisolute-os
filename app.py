@@ -111,6 +111,8 @@ s.setdefault("role", "usuario")
 s.setdefault("must_change", False)
 s.setdefault("theme_mode", load_user_prefs().get("theme_mode", "Claro"))
 s.setdefault("_flash", [])
+# este é o cara que vai manter a OS corrente
+s.setdefault("current_os_id", None)
 
 def _rerun():
     try:
@@ -214,9 +216,6 @@ html, body, [data-testid="stAppViewContainer"] {{
   border-radius:12px !important;
   background:#fff !important;
   color:{HB_TEXT} !important;
-}}
-.stDateInput input {{
-  padding-left: .5rem !important;
 }}
 .stTextArea > div > textarea {{
   min-height:80px;
@@ -484,7 +483,7 @@ def load_signature_bytes() -> bytes | None:
     return None
 
 # ======================================================================
-# CNPJ LOOKUP (atualizada)
+# CNPJ LOOKUP
 # ======================================================================
 def buscar_cnpj_endereco(cnpj: str) -> dict | None:
     cnpj_limpo = re.sub(r"\D", "", cnpj or "")
@@ -537,19 +536,12 @@ def buscar_cnpj_endereco(cnpj: str) -> dict | None:
             if cep:        partes.append(f"CEP {cep.strip()}")
             endereco = ", ".join(partes)
 
-            # telefone
             tel = data.get("telefone") or est.get("telefone") or est.get("telefone1")
             if not tel:
                 ddd1 = data.get("ddd_telefone_1")
                 tel1 = data.get("telefone_1")
                 if ddd1 and tel1:
                     tel = f"({ddd1}) {tel1}"
-            if not tel:
-                ddd2 = data.get("ddd_telefone_2")
-                tel2 = data.get("telefone_2")
-                if ddd2 and tel2:
-                    tel = f"({ddd2}) {tel2}"
-
             email = data.get("email") or est.get("email") or ""
 
             return {
@@ -565,7 +557,7 @@ def buscar_cnpj_endereco(cnpj: str) -> dict | None:
     return None
 
 # ======================================================================
-# CALLBACKS
+# CALLBACKS CNPJ
 # ======================================================================
 def cb_buscar_cnpj_cliente_novo():
     info = buscar_cnpj_endereco(st.session_state.get("cli_doc_new", ""))
@@ -918,7 +910,6 @@ def page_obras():
             obra_edit = sess.get(Obra, obra_id)
 
     with col_form:
-        # NOVA OBRA
         if obra_edit is None:
             st.subheader("Nova obra")
             st.text_input("Nome da obra", "", key="obra_nome_new")
@@ -945,7 +936,6 @@ def page_obras():
                     sess.add(nova); sess.commit()
                 flash("success", "Obra criada.")
                 _rerun()
-        # EDITAR OBRA
         else:
             tab_dados, tab_anexos, tab_serv = st.tabs(["Dados", "Anexos", "Tabela de preços"])
             with tab_dados:
@@ -1106,7 +1096,7 @@ def page_servicos():
     st.markdown('</div>', unsafe_allow_html=True)
 
 # ======================================================================
-# PÁGINA EMITIR OS
+# PÁGINA EMITIR OS (ajustada p/ manter OS)
 # ======================================================================
 def page_emitir_os():
     st.markdown('<div class="section-title">Emitir OS</div>', unsafe_allow_html=True)
@@ -1117,17 +1107,28 @@ def page_emitir_os():
         servicos = sess.query(Servico).filter(Servico.ativo == 1).order_by(Servico.descricao.asc()).all()
         os_list = sess.query(OS).order_by(OS.id.desc()).limit(50).all()
 
-    ops = ["(Nova OS)"] + [f"{o.id} — {o.numero} — {o.status}" for o in os_list]
-    os_sel = st.selectbox("Selecione OS", ops, key="os_sel_emitir")
+    # descobrir índice padrão do select de OS
+    default_index = 0
+    cur_id = st.session_state.get("current_os_id")
+    if cur_id:
+        for i, o in enumerate(os_list, start=1):  # +1 porque "(Nova OS)" é o 0
+            if o.id == cur_id:
+                default_index = i
+                break
 
-    if os_sel != "(Nova OS)":
+    ops = ["(Nova OS)"] + [f"{o.id} — {o.numero} — {o.status}" for o in os_list]
+    os_sel = st.selectbox("Selecione OS", ops, index=default_index, key="os_sel_emitir")
+
+    if os_sel == "(Nova OS)":
+        os_db = None
+        modo_novo = True
+        st.session_state["current_os_id"] = None
+    else:
         os_id = int(os_sel.split("—", 1)[0].strip())
         with SessionLocal() as sess:
             os_db = sess.get(OS, os_id)
         modo_novo = False
-    else:
-        os_db = None
-        modo_novo = True
+        st.session_state["current_os_id"] = os_db.id
 
     obra_opc = [f"{o.id} — {o.nome}" for o in obras]
     if modo_novo:
@@ -1150,7 +1151,7 @@ def page_emitir_os():
     st.selectbox("Status", STATUS_OPTIONS, index=STATUS_OPTIONS.index(os_status) if os_status in STATUS_OPTIONS else 0, key="emit_os_status")
     os_obs_new = st.text_area("Observações", os_obs, height=110)
 
-    # -------- ITENS DA OS (com preço da obra) --------
+    # -------- ITENS DA OS --------
     st.markdown("#### Itens da OS")
     col_s, col_q, col_p, col_btn = st.columns([2.8, 1, 1, 0.4])
     with col_s:
@@ -1200,6 +1201,7 @@ def page_emitir_os():
                 )
                 sess.add(nova)
                 sess.commit()
+                st.session_state["current_os_id"] = nova.id  # <- guardar
             else:
                 os_obj = sess.get(OS, os_db.id)
                 os_obj.data_emissao = st.session_state["emit_os_dt"]
@@ -1207,10 +1209,11 @@ def page_emitir_os():
                 os_obj.status = st.session_state["emit_os_status"]
                 os_obj.observacoes = os_obs_new
                 sess.commit()
+                st.session_state["current_os_id"] = os_obj.id
         flash("success", "OS salva com sucesso.")
         _rerun()
 
-    # adicionar item se for OS existente
+    # adicionar item se for OS já existente
     if add_item and not modo_novo:
         srv_id = int(srv_sel.split("—", 1)[0].strip())
         obra_id = int(obra_sel.split("—", 1)[0].strip())
@@ -1232,6 +1235,7 @@ def page_emitir_os():
                 preco_unit=preco_final,
             )
             sess.add(item); sess.commit()
+        st.session_state["current_os_id"] = os_db.id  # garantir que fica na mesma OS
         flash("success", "Serviço incluído na OS.")
         _rerun()
 
@@ -1249,7 +1253,9 @@ def page_emitir_os():
                 "preco_unit":"Preço unit.",
                 "subtotal":"Subtotal",
             })
+            total_os = df_it["Subtotal"].sum()
             st.dataframe(df_it, use_container_width=True)
+            st.markdown(f"<div class='card'><b>Total da OS:</b> {format_brl(total_os)}</div>", unsafe_allow_html=True)
         else:
             st.info("Esta OS ainda não tem itens. Adicione usando o botão ➕.")
     else:
