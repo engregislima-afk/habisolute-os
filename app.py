@@ -1234,11 +1234,7 @@ def page_emitir_os():
         os_db = None
         s["current_os_id"] = None
 
-    if obras:
-        obra_opc = [f"{o.id} — {o.nome}" for o in obras]
-    else:
-        obra_opc = ["(Cadastre obras)"]
-
+    obra_opc = [f"{o.id} — {o.nome}" for o in obras] or ["(Cadastre obras)"]
     if os_db:
         obra_idx = 0
         for i, o in enumerate(obras):
@@ -1255,56 +1251,59 @@ def page_emitir_os():
         os_obs = ""
 
     obra_sel = st.selectbox("Obra", obra_opc, index=obra_idx if obra_opc else 0)
+    if obra_sel != "(Cadastre obras)":
+        obra_id = int(obra_sel.split("—", 1)[0].strip())
+    else:
+        obra_id = None
+
     st.date_input("Data de emissão", value=data_emissao, key="emit_os_dt")
     st.selectbox("Status", STATUS_OPTIONS, index=STATUS_OPTIONS.index(os_status) if os_status in STATUS_OPTIONS else 0, key="emit_os_status")
     os_obs_new = st.text_area("Observações", os_obs, height=110)
 
-    obra_id = None
     obra_obj = None
-    if obras and obra_sel != "(Cadastre obras)":
-        obra_id = int(obra_sel.split("—", 1)[0].strip())
+    if obra_id is not None:
         obra_obj = next((o for o in obras if o.id == obra_id), None)
-
-    if obra_obj:
-        faltantes = []
-        if not obra_obj.anexo_cnpj: faltantes.append("Cartão CNPJ")
-        if not obra_obj.anexo_proposta: faltantes.append("Proposta")
-        if not obra_obj.anexo_contrato: faltantes.append("Contrato")
-        if obra_obj.bloqueada:
-            banner("warn", f"Obra bloqueada: {obra_obj.bloqueada_motivo or 'sem motivo cadastrado.'}")
-        if faltantes:
-            banner("warn", "Documentos da obra faltando: " + ", ".join(faltantes))
+        if obra_obj:
+            faltantes = []
+            if not obra_obj.anexo_cnpj: faltantes.append("Cartão CNPJ")
+            if not obra_obj.anexo_proposta: faltantes.append("Proposta")
+            if not obra_obj.anexo_contrato: faltantes.append("Contrato")
+            if obra_obj.bloqueada:
+                banner("warn", f"Obra bloqueada: {obra_obj.bloqueada_motivo or 'sem motivo cadastrado.'}")
+            if faltantes:
+                banner("warn", "Documentos da obra faltando: " + ", ".join(faltantes))
 
     if st.button("Salvar OS", use_container_width=True):
-        if not obra_id:
-            notify("error", "Cadastre uma obra antes de emitir a OS.")
-        else:
-            with SessionLocal() as sess:
-                if modo_novo:
-                    num = gerar_numero_os(sess)
-                    nova = OS(
-                        numero=num,
-                        data_emissao=s["emit_os_dt"],
-                        obra_id=obra_id,
-                        status=s["emit_os_status"],
-                        observacoes=os_obs_new,
-                    )
-                    sess.add(nova)
-                    sess.commit()
-                    s["current_os_id"] = nova.id
-                    notify("success", f"OS {num} criada. Agora inclua os serviços.")
-                else:
-                    os_obj = sess.get(OS, os_db.id)
-                    os_obj.data_emissao = s["emit_os_dt"]
-                    os_obj.obra_id = obra_id
-                    os_obj.status = s["emit_os_status"]
-                    os_obj.observacoes = os_obs_new
-                    sess.commit()
-                    notify("success", f"OS {os_obj.numero} atualizada.")
+        if obra_id is None:
+            flash("warn", "Selecione uma obra válida antes de salvar.")
             _rerun()
+        with SessionLocal() as sess:
+            if modo_novo:
+                num = gerar_numero_os(sess)
+                nova = OS(
+                    numero=num,
+                    data_emissao=s["emit_os_dt"],
+                    obra_id=obra_id,
+                    status=s["emit_os_status"],
+                    observacoes=os_obs_new,
+                )
+                sess.add(nova)
+                sess.commit()
+                s["current_os_id"] = nova.id
+                flash("success", f"OS {num} criada. Agora inclua os serviços.")
+            else:
+                os_obj = sess.get(OS, os_db.id)
+                os_obj.data_emissao = s["emit_os_dt"]
+                os_obj.obra_id = obra_id
+                os_obj.status = s["emit_os_status"]
+                os_obj.observacoes = os_obs_new
+                sess.commit()
+                flash("success", f"OS {os_obj.numero} atualizada.")
+        _rerun()
 
     st.markdown("</div>", unsafe_allow_html=True)
 
+    # ---------------------- ITENS DA OS ----------------------
     st.markdown("<div class='hb-card'>", unsafe_allow_html=True)
     st.markdown("### Itens da OS", unsafe_allow_html=True)
 
@@ -1313,16 +1312,15 @@ def page_emitir_os():
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    if not obra_id:
-        st.info("Escolha uma obra válida antes de incluir itens.")
-        st.markdown("</div>", unsafe_allow_html=True)
-        return
-
     with SessionLocal() as sess:
-        precos_espec = {
-            x.servico_id: x.preco_unit
-            for x in sess.query(ObraServico).filter(ObraServico.obra_id == obra_id, ObraServico.ativo == 1).all()
-        }
+        precos_espec = {}
+        if obra_id is not None:
+            precos_espec = {
+                x.servico_id: x.preco_unit
+                for x in sess.query(ObraServico).filter(
+                    ObraServico.obra_id == obra_id, ObraServico.ativo == 1
+                ).all()
+            }
 
     col_s, col_q, col_p, col_btn = st.columns([2.8, 0.9, 1.1, 0.4])
     with col_s:
@@ -1332,7 +1330,10 @@ def page_emitir_os():
         qtd = st.number_input("Qtd", min_value=0.0, value=1.0, step=1.0, format="%.2f")
     with col_p:
         srv_id_tmp = int(srv_sel.split("—", 1)[0].strip())
-        preco_sugerido = precos_espec.get(srv_id_tmp, next((s.preco_unit for s in servicos if s.id == srv_id_tmp), 0.0) or 0.0)
+        preco_sugerido = precos_espec.get(
+            srv_id_tmp,
+            next((s.preco_unit for s in servicos if s.id == srv_id_tmp), 0.0) or 0.0
+        )
         preco_in = st.number_input("Preço unit.", min_value=0.0, value=float(preco_sugerido), step=1.0, format="%.2f")
     with col_btn:
         st.write("")
@@ -1342,11 +1343,13 @@ def page_emitir_os():
         srv_id = int(srv_sel.split("—", 1)[0].strip())
         with SessionLocal() as sess:
             os_obj = sess.get(OS, s["current_os_id"])
-            prec_ob = (
-                sess.query(ObraServico)
-                .filter(ObraServico.obra_id == obra_id, ObraServico.servico_id == srv_id, ObraServico.ativo == 1)
-                .first()
-            )
+            prec_ob = None
+            if obra_id is not None:
+                prec_ob = (
+                    sess.query(ObraServico)
+                    .filter(ObraServico.obra_id == obra_id, ObraServico.servico_id == srv_id, ObraServico.ativo == 1)
+                    .first()
+                )
             sv = sess.get(Servico, srv_id)
             preco_final = preco_in or (prec_ob.preco_unit if prec_ob else (sv.preco_unit or 0.0))
             item = OSItem(
@@ -1356,11 +1359,12 @@ def page_emitir_os():
                 preco_unit=preco_final,
             )
             sess.add(item); sess.commit()
-        notify("success", "Serviço adicionado à OS.")
+        flash("success", "Serviço adicionado à OS.")
         _rerun()
 
     with SessionLocal() as sess:
         os_row, obra_row, itens = obter_os_com_itens(sess, s["current_os_id"])
+
     st.markdown("#### Serviços já adicionados a esta OS")
     if itens:
         df_it = pd.DataFrame(itens).rename(columns={
@@ -1373,9 +1377,25 @@ def page_emitir_os():
         })
         total = sum(i["subtotal"] for i in itens)
         st.dataframe(df_it, use_container_width=True, hide_index=True)
-        st.markdown(f"<div class='hb-alert hb-alert-success'><b>Total dos itens desta OS:</b> {format_brl(total)}</div>", unsafe_allow_html=True)
+        st.markdown(
+            f"<div class='hb-alert hb-alert-success'><b>Total dos itens desta OS:</b> {format_brl(total)}</div>",
+            unsafe_allow_html=True
+        )
     else:
         st.markdown("<div class='hb-alert'>Esta OS ainda não tem itens. Adicione usando o botão ➕.</div>", unsafe_allow_html=True)
+
+    # >>>>> BOTÕES NOVOS AQUI <<<<<
+    col_a, col_b = st.columns(2)
+    with col_a:
+        if st.button("Salvar OS", key="btn_save_os_bottom", use_container_width=True):
+            flash("success", "OS salva.")
+            _rerun()
+    with col_b:
+        if st.button("Nova emissão de OS", key="btn_new_os_bottom", use_container_width=True):
+            s["current_os_id"] = None
+            s["goto_emitir"] = True
+            flash("info", "Preencha os dados para uma nova OS.")
+            _rerun()
 
     st.markdown("</div>", unsafe_allow_html=True)
 
