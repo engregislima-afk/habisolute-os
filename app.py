@@ -1140,11 +1140,13 @@ def page_emitir_os():
     st.markdown("<h4>Emitir OS</h4>", unsafe_allow_html=True)
     st.markdown("<div class='hb-card'>", unsafe_allow_html=True)
 
+    # carrega dados
     with SessionLocal() as sess:
         obras = sess.query(Obra).filter(Obra.ativo == 1).order_by(Obra.nome.asc()).all()
         servicos = sess.query(Servico).filter(Servico.ativo == 1).order_by(Servico.descricao.asc()).all()
         os_list = sess.query(OS).order_by(OS.id.desc()).limit(80).all()
 
+    # select de OS
     ops = ["(Nova OS)"] + [f"{o.id} — {o.numero} — {o.status}" for o in os_list]
     default_idx = 0
     if s.get("current_os_id"):
@@ -1164,12 +1166,13 @@ def page_emitir_os():
         os_db = None
         s["current_os_id"] = None
 
-    # opções de obra (com placeholder se não tiver)
+    # opções de obra
     if obras:
         obra_opc = [f"{o.id} — {o.nome}" for o in obras]
     else:
         obra_opc = ["(Cadastre obras)"]
 
+    # valores padrão da OS
     if os_db:
         obra_idx = 0
         for i, o in enumerate(obras):
@@ -1187,23 +1190,34 @@ def page_emitir_os():
 
     obra_sel = st.selectbox("Obra", obra_opc, index=obra_idx if obras else 0)
 
-    # se for placeholder, não deixa seguir
-    if obra_sel.strip().startswith("("):
-        st.warning("Cadastre obras primeiro para emitir OS.")
+    # 👇 este if é o que evita o ValueError
+    if obra_sel.startswith("("):
+        st.warning("Cadastre uma obra em 'Cadastro: Obras' antes de emitir uma OS.")
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
+    # daqui pra baixo é seguro converter
     obra_id = int(obra_sel.split("—", 1)[0].strip())
+
     st.date_input("Data de emissão", value=data_emissao, key="emit_os_dt")
-    st.selectbox("Status", STATUS_OPTIONS, index=STATUS_OPTIONS.index(os_status) if os_status in STATUS_OPTIONS else 0, key="emit_os_status")
+    st.selectbox(
+        "Status",
+        STATUS_OPTIONS,
+        index=STATUS_OPTIONS.index(os_status) if os_status in STATUS_OPTIONS else 0,
+        key="emit_os_status",
+    )
     os_obs_new = st.text_area("Observações", os_obs, height=110)
 
+    # alerta de documentos da obra
     obra_obj = next((o for o in obras if o.id == obra_id), None)
     if obra_obj:
         faltantes = []
-        if not obra_obj.anexo_cnpj: faltantes.append("Cartão CNPJ")
-        if not obra_obj.anexo_proposta: faltantes.append("Proposta")
-        if not obra_obj.anexo_contrato: faltantes.append("Contrato")
+        if not obra_obj.anexo_cnpj:
+            faltantes.append("Cartão CNPJ")
+        if not obra_obj.anexo_proposta:
+            faltantes.append("Proposta")
+        if not obra_obj.anexo_contrato:
+            faltantes.append("Contrato")
         if obra_obj.bloqueada:
             banner("warn", f"Obra bloqueada: {obra_obj.bloqueada_motivo or 'sem motivo cadastrado.'}")
         if faltantes:
@@ -1236,7 +1250,9 @@ def page_emitir_os():
 
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # Itens
+    # =========================
+    # Itens da OS
+    # =========================
     st.markdown("<div class='hb-card'>", unsafe_allow_html=True)
     st.markdown("### Itens da OS", unsafe_allow_html=True)
 
@@ -1245,10 +1261,13 @@ def page_emitir_os():
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
+    # preços específicos da obra
     with SessionLocal() as sess:
         precos_espec = {
             x.servico_id: x.preco_unit
-            for x in sess.query(ObraServico).filter(ObraServico.obra_id == obra_id, ObraServico.ativo == 1).all()
+            for x in sess.query(ObraServico).filter(
+                ObraServico.obra_id == obra_id, ObraServico.ativo == 1
+            ).all()
         }
 
     col_s, col_q, col_p, col_btn = st.columns([2.8, 0.9, 1.1, 0.4])
@@ -1259,11 +1278,65 @@ def page_emitir_os():
         qtd = st.number_input("Qtd", min_value=0.0, value=1.0, step=1.0, format="%.2f")
     with col_p:
         srv_id_tmp = int(srv_sel.split("—", 1)[0].strip())
-        preco_sugerido = precos_espec.get(srv_id_tmp, next((s.preco_unit for s in servicos if s.id == srv_id_tmp), 0.0) or 0.0)
+        preco_sugerido = precos_espec.get(
+            srv_id_tmp,
+            next((s.preco_unit for s in servicos if s.id == srv_id_tmp), 0.0) or 0.0,
+        )
         preco_in = st.number_input("Preço unit.", min_value=0.0, value=float(preco_sugerido), step=1.0, format="%.2f")
     with col_btn:
         st.write("")
         add_item = st.button("➕", key="btn_add_item_os")
+
+    if add_item:
+        srv_id = int(srv_sel.split("—", 1)[0].strip())
+        with SessionLocal() as sess:
+            os_obj = sess.get(OS, s["current_os_id"])
+            prec_ob = (
+                sess.query(ObraServico)
+                .filter(ObraServico.obra_id == obra_id,
+                        ObraServico.servico_id == srv_id,
+                        ObraServico.ativo == 1)
+                .first()
+            )
+            sv = sess.get(Servico, srv_id)
+            preco_final = preco_in or (prec_ob.preco_unit if prec_ob else (sv.preco_unit or 0.0))
+            item = OSItem(
+                os_id=os_obj.id,
+                servico_id=sv.id,
+                quantidade_prevista=qtd,
+                preco_unit=preco_final,
+            )
+            sess.add(item)
+            sess.commit()
+        flash("success", "Serviço adicionado à OS.")
+        _rerun()
+
+    # lista de itens
+    with SessionLocal() as sess:
+        os_row, obra_row, itens = obter_os_com_itens(sess, s["current_os_id"])
+    st.markdown("#### Serviços já adicionados a esta OS")
+    if itens:
+        df_it = pd.DataFrame(itens).rename(columns={
+            "codigo": "Código",
+            "descricao": "Descrição",
+            "unidade": "Un",
+            "qtd_prev": "Qtd",
+            "preco_unit": "Preço unit.",
+            "subtotal": "Subtotal",
+        })
+        total = sum(i["subtotal"] for i in itens)
+        st.dataframe(df_it, use_container_width=True, hide_index=True)
+        st.markdown(
+            f"<div class='hb-alert hb-alert-success'><b>Total dos itens desta OS:</b> {format_brl(total)}</div>",
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            "<div class='hb-alert'>Esta OS ainda não tem itens. Adicione usando o botão ➕.</div>",
+            unsafe_allow_html=True,
+        )
+
+    st.markdown("</div>", unsafe_allow_html=True)
 
     if add_item:
         srv_id = int(srv_sel.split("—", 1)[0].strip())
