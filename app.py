@@ -22,18 +22,33 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship, Session, selectinload
 
-# ReportLab
-from reportlab.lib.units import mm
-from reportlab.lib import colors
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.enums import TA_CENTER
-from reportlab.platypus import (
-    SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
-)
+# ReportLab (pode não existir no Render)
 try:
-    from reportlab.platypus import KeepTogether
-except Exception:
-    from reportlab.platypus.flowables import KeepTogether
+    from reportlab.lib.units import mm
+    from reportlab.lib import colors
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.enums import TA_CENTER
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.platypus import (
+        SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
+    )
+    try:
+        from reportlab.platypus import KeepTogether
+    except Exception:
+        from reportlab.platypus.flowables import KeepTogether
+    REPORTLAB_AVAILABLE = True
+except ModuleNotFoundError:
+    # vamos rodar o app mesmo assim; PDFs vão avisar que não dá
+    REPORTLAB_AVAILABLE = False
+    mm = None
+    colors = None
+    TA_CENTER = None
+    # criamos dummies pra evitar NameError em definição de funções
+    def getSampleStyleSheet():
+        return {}
+    class ParagraphStyle: ...
+    def A4(): ...
+    def landscape(x): ...
 
 # =============================================================================
 # CONFIG
@@ -538,13 +553,15 @@ def to_df(sess: Session, table) -> pd.DataFrame:
 # =============================================================================
 # PDF helpers
 # =============================================================================
-styles = getSampleStyleSheet()
-styleN = styles["BodyText"]
-styleSmall = ParagraphStyle("small", parent=styleN, fontSize=9, leading=11)
-HB_ORANGE = colors.HexColor("#FF7A00")
+styles = getSampleStyleSheet() if REPORTLAB_AVAILABLE else {}
+styleN = styles["BodyText"] if REPORTLAB_AVAILABLE else None
+styleSmall = ParagraphStyle("small", parent=styleN, fontSize=9, leading=11) if REPORTLAB_AVAILABLE else None
+HB_ORANGE = colors.HexColor("#FF7A00") if REPORTLAB_AVAILABLE else None
 FORM_CODE = "FORM.H.012.00"
 
 def _header_vertical_centralizado():
+    if not REPORTLAB_AVAILABLE:
+        raise RuntimeError("ReportLab não está instalado no servidor.")
     p1 = Paragraph("<b>Habisolute Engenharia e Controle Tecnológico</b>", ParagraphStyle("hdr1", parent=styleN, fontSize=11, alignment=TA_CENTER))
     p2 = Paragraph("contato@habisoluteengenharia.com.br", ParagraphStyle("hdr2", parent=styleN, fontSize=9, alignment=TA_CENTER))
     p3 = Paragraph("(16) 3877-9480", ParagraphStyle("hdr3", parent=styleN, fontSize=9, alignment=TA_CENTER))
@@ -570,6 +587,8 @@ def _on_page(canvas, doc, titulo: str = ""):
     canvas.restoreState()
 
 def gerar_pdf_os(os_row, obra_row, itens: list[dict], show_prices: bool, logo_bytes: bytes | None, signature_bytes: bytes | None = None) -> bytes:
+    if not REPORTLAB_AVAILABLE:
+        raise RuntimeError("ReportLab não está instalado no servidor.")
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=28, bottomMargin=40, leftMargin=14, rightMargin=14)
     story = []
@@ -632,8 +651,9 @@ def gerar_pdf_os(os_row, obra_row, itens: list[dict], show_prices: bool, logo_by
     doc.build(story, onFirstPage=lambda c,d:_on_page(c,d,""), onLaterPages=lambda c,d:_on_page(c,d,""))
     return buf.getvalue()
 
-# ===== PDF de MEDIÇÃO com RESUMO =====
 def gerar_pdf_medicao(obra_nome: str, periodo_str: str, linhas: list[dict], medicao_num: int, signature_bytes: bytes | None = None) -> bytes:
+    if not REPORTLAB_AVAILABLE:
+        raise RuntimeError("ReportLab não está instalado no servidor.")
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=landscape(A4), topMargin=28, bottomMargin=40, leftMargin=14, rightMargin=14)
     story = []
@@ -776,6 +796,7 @@ def obter_os_com_itens(sess: Session, os_id: int):
             "subtotal": preco * qtd,
         })
     return os_row, obra_row, itens
+
 # =============================================================================
 # PÁGINA: CLIENTES
 # =============================================================================
@@ -1143,7 +1164,12 @@ def page_emitir_os():
         os_db = None
         s["current_os_id"] = None
 
-    obra_opc = [f"{o.id} — {o.nome}" for o in obras] or ["(Cadastre obras)"]
+    # opções de obra (com placeholder se não tiver)
+    if obras:
+        obra_opc = [f"{o.id} — {o.nome}" for o in obras]
+    else:
+        obra_opc = ["(Cadastre obras)"]
+
     if os_db:
         obra_idx = 0
         for i, o in enumerate(obras):
@@ -1159,7 +1185,14 @@ def page_emitir_os():
         os_status = "Aberta"
         os_obs = ""
 
-    obra_sel = st.selectbox("Obra", obra_opc, index=obra_idx if obra_opc else 0)
+    obra_sel = st.selectbox("Obra", obra_opc, index=obra_idx if obras else 0)
+
+    # se for placeholder, não deixa seguir
+    if obra_sel.strip().startswith("("):
+        st.warning("Cadastre obras primeiro para emitir OS.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
     obra_id = int(obra_sel.split("—", 1)[0].strip())
     st.date_input("Data de emissão", value=data_emissao, key="emit_os_dt")
     st.selectbox("Status", STATUS_OPTIONS, index=STATUS_OPTIONS.index(os_status) if os_status in STATUS_OPTIONS else 0, key="emit_os_status")
@@ -1272,6 +1305,7 @@ def page_emitir_os():
         st.markdown("<div class='hb-alert'>Esta OS ainda não tem itens. Adicione usando o botão ➕.</div>", unsafe_allow_html=True)
 
     st.markdown("</div>", unsafe_allow_html=True)
+
 # =============================================================================
 # PÁGINA: VISUALIZAR / IMPRIMIR
 # =============================================================================
@@ -1351,20 +1385,23 @@ def page_visualizar_imprimir():
     else:
         banner("info", "Esta OS não possui itens.")
 
-    sig_bytes = load_signature_bytes()
-    pdf_interno = gerar_pdf_os(os_row, obra_row, itens, show_prices=True, logo_bytes=None, signature_bytes=sig_bytes)
-    pdf_cliente = gerar_pdf_os(os_row, obra_row, itens, show_prices=False, logo_bytes=None, signature_bytes=sig_bytes)
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.download_button("Baixar PDF (interno — com preços)", data=pdf_interno, file_name=f"{os_row.numero}_interno.pdf", mime="application/pdf")
-    with c2:
-        st.download_button("Baixar PDF (cliente — sem preços)", data=pdf_cliente, file_name=f"{os_row.numero}_cliente.pdf", mime="application/pdf")
-    with c3:
-        if st.button("Editar esta OS"):
-            s["current_os_id"] = os_id
-            s["goto_emitir"] = True
-            flash("info", "Você pode editar a OS na aba Emitir OS.")
-            _rerun()
+    if not REPORTLAB_AVAILABLE:
+        st.warning("Este servidor não tem o pacote ReportLab instalado, então não dá para gerar o PDF aqui. Instale `reportlab` no build para liberar os botões.")
+    else:
+        sig_bytes = load_signature_bytes()
+        pdf_interno = gerar_pdf_os(os_row, obra_row, itens, show_prices=True, logo_bytes=None, signature_bytes=sig_bytes)
+        pdf_cliente = gerar_pdf_os(os_row, obra_row, itens, show_prices=False, logo_bytes=None, signature_bytes=sig_bytes)
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.download_button("Baixar PDF (interno — com preços)", data=pdf_interno, file_name=f"{os_row.numero}_interno.pdf", mime="application/pdf")
+        with c2:
+            st.download_button("Baixar PDF (cliente — sem preços)", data=pdf_cliente, file_name=f"{os_row.numero}_cliente.pdf", mime="application/pdf")
+        with c3:
+            if st.button("Editar esta OS"):
+                s["current_os_id"] = os_id
+                s["goto_emitir"] = True
+                flash("info", "Você pode editar a OS na aba Emitir OS.")
+                _rerun()
 
     st.markdown("<hr>", unsafe_allow_html=True)
     if st.button("Excluir esta OS", type="secondary"):
@@ -1385,6 +1422,8 @@ def page_medicao():
     st.markdown("<h4>Medição Mensal</h4>", unsafe_allow_html=True)
     st.markdown("<div class='hb-card'>", unsafe_allow_html=True)
 
+    if not REPORTLAB_AVAILABLE:
+        st.warning("Para gerar o PDF da medição é preciso instalar o pacote `reportlab` no ambiente de deploy.")
     with SessionLocal() as sess:
         obras = sess.query(Obra).order_by(Obra.nome.asc()).all()
 
@@ -1455,21 +1494,24 @@ def page_medicao():
         df_med = pd.DataFrame(linhas)
         st.dataframe(df_med, use_container_width=True, hide_index=True)
 
-        sig_bytes = load_signature_bytes()
-        periodo_str = f"{ini.strftime('%d/%m/%Y')} a {fim.strftime('%d/%m/%Y')}"
-        pdf = gerar_pdf_medicao(
-            obra_nome=obra_obj.nome if obra_obj else f"Obra {obra_id}",
-            periodo_str=periodo_str,
-            linhas=linhas,
-            medicao_num=medicao_num,
-            signature_bytes=sig_bytes,
-        )
-        st.download_button(
-            "Gerar PDF da medição",
-            data=pdf,
-            file_name=f"medicao_{obra_id}_{ini:%Y%m}_n{medicao_num}.pdf",
-            mime="application/pdf"
-        )
+        if REPORTLAB_AVAILABLE:
+            sig_bytes = load_signature_bytes()
+            periodo_str = f"{ini.strftime('%d/%m/%Y')} a {fim.strftime('%d/%m/%Y')}"
+            pdf = gerar_pdf_medicao(
+                obra_nome=obra_obj.nome if obra_obj else f"Obra {obra_id}",
+                periodo_str=periodo_str,
+                linhas=linhas,
+                medicao_num=medicao_num,
+                signature_bytes=sig_bytes,
+            )
+            st.download_button(
+                "Gerar PDF da medição",
+                data=pdf,
+                file_name=f"medicao_{obra_id}_{ini:%Y%m}_n{medicao_num}.pdf",
+                mime="application/pdf"
+            )
+        else:
+            st.info("Os dados estão aí em cima; instale `reportlab` para gerar o PDF.")
     else:
         st.info("Nenhuma OS dessa obra dentro do período selecionado.")
 
@@ -1479,6 +1521,8 @@ def page_medicao():
 # RELATÓRIOS
 # =============================================================================
 def gerar_pdf_fechamento(cliente_nome: str, periodo_str: str, linhas: list[dict], signature_bytes: bytes | None = None) -> bytes:
+    if not REPORTLAB_AVAILABLE:
+        raise RuntimeError("ReportLab não está instalado no servidor.")
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=landscape(A4), topMargin=28, bottomMargin=40, leftMargin=14, rightMargin=14)
     story = []
@@ -1517,6 +1561,8 @@ def gerar_pdf_fechamento(cliente_nome: str, periodo_str: str, linhas: list[dict]
 def page_relatorios():
     st.markdown("<h4>Relatórios</h4>", unsafe_allow_html=True)
     st.markdown("<div class='hb-card'>", unsafe_allow_html=True)
+    if not REPORTLAB_AVAILABLE:
+        st.warning("Para baixar o PDF de fechamento é preciso instalar `reportlab`.")
     with SessionLocal() as sess:
         clientes = sess.query(Cliente).order_by(Cliente.nome.asc()).all()
     cli_ops = [f"{c.id} — {c.nome}" for c in clientes]
@@ -1555,14 +1601,15 @@ def page_relatorios():
         df_rel = pd.DataFrame(linhas)
         st.dataframe(df_rel, use_container_width=True, hide_index=True)
         from_name = cli_sel.split("—", 1)[1].strip()
-        sig_bytes = load_signature_bytes()
-        pdf = gerar_pdf_fechamento(
-            cliente_nome=from_name,
-            periodo_str=f"{ini.strftime('%d/%m/%Y')} a {fim.strftime('%d/%m/%Y')}",
-            linhas=linhas,
-            signature_bytes=sig_bytes,
-        )
-        st.download_button("Baixar PDF de fechamento", data=pdf, file_name=f"fechamento_{cli_id}_{ini:%Y%m}.pdf", mime="application/pdf")
+        if REPORTLAB_AVAILABLE:
+            sig_bytes = load_signature_bytes()
+            pdf = gerar_pdf_fechamento(
+                cliente_nome=from_name,
+                periodo_str=f"{ini.strftime('%d/%m/%Y')} a {fim.strftime('%d/%m/%Y')}",
+                linhas=linhas,
+                signature_bytes=sig_bytes,
+            )
+            st.download_button("Baixar PDF de fechamento", data=pdf, file_name=f"fechamento_{cli_id}_{ini:%Y%m}.pdf", mime="application/pdf")
     else:
         st.info("Nada a mostrar nesse período.")
     st.markdown("</div>", unsafe_allow_html=True)
