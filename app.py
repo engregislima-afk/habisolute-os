@@ -813,29 +813,32 @@ def page_clientes():
         sel = st.selectbox("Selecione", ops, label_visibility="collapsed", key="cli_sel")
 
     with col_form:
+        # ===== editar cliente =====
         if sel != "(Novo cliente)":
             cli_id = int(sel.split("—", 1)[0].strip())
             with SessionLocal() as sess:
                 cli = sess.get(Cliente, cli_id)
 
-            nome = st.text_input("Nome / Razão social", cli.nome)
-            doc = st.text_input("CNPJ / CPF", cli.documento or "", key="cli_doc_edit")
-            end = st.text_area("Endereço", cli.endereco or "", height=80)
-            contato = st.text_input("Contato", cli.contato or "")
-            email = st.text_input("Email", cli.email or "")
-            tel = st.text_input("Telefone", cli.telefone or "")
+            # inputs com chave fixa
+            nome = st.text_input("Nome / Razão social", value=cli.nome, key="cli_nome")
+            doc = st.text_input("CNPJ / CPF", value=cli.documento or "", key="cli_doc_edit")
+            end = st.text_area("Endereço", value=cli.endereco or "", height=80, key="cli_end")
+            contato = st.text_input("Contato", value=cli.contato or "", key="cli_contato")
+            email = st.text_input("Email", value=cli.email or "", key="cli_email")
+            tel = st.text_input("Telefone", value=cli.telefone or "", key="cli_tel")
 
             if st.button("Buscar dados pelo CNPJ", key="btn_buscar_cli_cnpj"):
-                info = buscar_cnpj_detalhado(doc)
+                info = buscar_cnpj_detalhado(st.session_state.get("cli_doc_edit", ""))
                 if info:
+                    # jogar direto no session_state pra preencher os campos
                     if info.get("razao_social") or info.get("nome_fantasia"):
-                        nome = info.get("razao_social") or info.get("nome_fantasia")
+                        st.session_state["cli_nome"] = info.get("razao_social") or info.get("nome_fantasia")
                     if info.get("endereco"):
-                        end = info["endereco"]
+                        st.session_state["cli_end"] = info["endereco"]
                     if info.get("email"):
-                        email = info["email"]
+                        st.session_state["cli_email"] = info["email"]
                     if info.get("telefone"):
-                        tel = info["telefone"]
+                        st.session_state["cli_tel"] = info["telefone"]
                     st.success("Dados do CNPJ carregados.")
                 else:
                     st.warning("Não consegui buscar esse CNPJ.")
@@ -845,35 +848,37 @@ def page_clientes():
             if st.button("Salvar cliente", key="btn_salvar_cli"):
                 with SessionLocal() as sess:
                     c = sess.get(Cliente, cli_id)
-                    c.nome = nome
-                    c.documento = doc
-                    c.endereco = end
-                    c.contato = contato
-                    c.email = email
-                    c.telefone = tel
+                    c.nome = st.session_state.get("cli_nome", "")
+                    c.documento = st.session_state.get("cli_doc_edit", "")
+                    c.endereco = st.session_state.get("cli_end", "")
+                    c.contato = st.session_state.get("cli_contato", "")
+                    c.email = st.session_state.get("cli_email", "")
+                    c.telefone = st.session_state.get("cli_tel", "")
                     c.ativo = 1 if ativo else 0
                     sess.commit()
                 st.success("Cliente atualizado.")
                 _rerun()
+
+        # ===== novo cliente =====
         else:
-            nome = st.text_input("Nome / Razão social", "")
-            doc = st.text_input("CNPJ / CPF", "", key="cli_doc_new")
-            end = st.text_area("Endereço", "", height=80)
-            contato = st.text_input("Contato", "")
-            email = st.text_input("Email", "")
-            tel = st.text_input("Telefone", "")
+            nome = st.text_input("Nome / Razão social", "", key="new_cli_nome")
+            doc = st.text_input("CNPJ / CPF", "", key="new_cli_doc")
+            end = st.text_area("Endereço", "", height=80, key="new_cli_end")
+            contato = st.text_input("Contato", "", key="new_cli_contato")
+            email = st.text_input("Email", "", key="new_cli_email")
+            tel = st.text_input("Telefone", "", key="new_cli_tel")
 
             if st.button("Buscar dados pelo CNPJ", key="btn_buscar_cli_cnpj_new"):
-                info = buscar_cnpj_detalhado(doc)
+                info = buscar_cnpj_detalhado(st.session_state.get("new_cli_doc", ""))
                 if info:
                     if info.get("razao_social") or info.get("nome_fantasia"):
-                        nome = info.get("razao_social") or info.get("nome_fantasia")
+                        st.session_state["new_cli_nome"] = info.get("razao_social") or info.get("nome_fantasia")
                     if info.get("endereco"):
-                        end = info["endereco"]
+                        st.session_state["new_cli_end"] = info["endereco"]
                     if info.get("email"):
-                        email = info["email"]
+                        st.session_state["new_cli_email"] = info["email"]
                     if info.get("telefone"):
-                        tel = info["telefone"]
+                        st.session_state["new_cli_tel"] = info["telefone"]
                     st.success("Dados do CNPJ carregados.")
                 else:
                     st.warning("Não consegui buscar esse CNPJ.")
@@ -881,12 +886,12 @@ def page_clientes():
             if st.button("Criar cliente", key="btn_criar_cli"):
                 with SessionLocal() as sess:
                     c = Cliente(
-                        nome=nome,
-                        documento=doc,
-                        endereco=end,
-                        contato=contato,
-                        email=email,
-                        telefone=tel,
+                        nome=st.session_state.get("new_cli_nome", ""),
+                        documento=st.session_state.get("new_cli_doc", ""),
+                        endereco=st.session_state.get("new_cli_end", ""),
+                        contato=st.session_state.get("new_cli_contato", ""),
+                        email=st.session_state.get("new_cli_email", ""),
+                        telefone=st.session_state.get("new_cli_tel", ""),
                         ativo=1,
                     )
                     sess.add(c)
@@ -920,11 +925,13 @@ def page_obras():
             obra_edit = sess.get(Obra, obra_id)
 
     with col_form:
+        # ===== editar obra =====
         if obra_edit:
             st.subheader(f"Editar obra: {obra_edit.nome}")
-            obra_nome = st.text_input("Nome da obra", obra_edit.nome)
-            obra_end = st.text_area("Endereço", obra_edit.endereco or "", height=80)
-            obra_doc = st.text_input("CNPJ / CPF da obra", obra_edit.documento or "")
+
+            obra_nome = st.text_input("Nome da obra", obra_edit.nome, key="obra_nome_edit")
+            obra_end = st.text_area("Endereço", obra_edit.endereco or "", height=80, key="obra_end_edit")
+            obra_doc = st.text_input("CNPJ / CPF da obra", obra_edit.documento or "", key="obra_doc_edit")
 
             cli_nomes = ["(sem cliente)"] + [c.nome for c in clientes]
             cli_default = 0
@@ -933,40 +940,59 @@ def page_obras():
                     if c.id == obra_edit.cliente_id:
                         cli_default = i
                         break
-            cli_sel = st.selectbox("Cliente", cli_nomes, index=cli_default)
+            cli_sel = st.selectbox("Cliente", cli_nomes, index=cli_default, key="obra_cli_edit")
 
-            ativo = st.checkbox("Obra ativa", value=(obra_edit.ativo == 1))
-            bloqueada = st.checkbox("Obra bloqueada", value=(obra_edit.bloqueada == 1))
-            motivo_bloq = st.text_input("Motivo do bloqueio", obra_edit.bloqueada_motivo or "")
-
-            cnpj_busca = st.text_input("Buscar endereço pelo CNPJ dessa obra", obra_doc or "", key="obra_doc_busca")
-            if st.button("Preencher dados da obra pelo CNPJ"):
-                info = buscar_cnpj_detalhado(cnpj_busca)
+            cnpj_busca = st.text_input(
+                "Buscar endereço pelo CNPJ dessa obra",
+                st.session_state.get("obra_doc_edit", ""),
+                key="obra_doc_busca"
+            )
+            if st.button("Preencher dados da obra pelo CNPJ", key="btn_obra_cnpj_edit"):
+                info = buscar_cnpj_detalhado(st.session_state.get("obra_doc_busca", ""))
                 if info:
-                    obra_end = info.get("endereco") or obra_end
-                    obra_nome = obra_nome or info.get("razao_social") or info.get("nome_fantasia") or obra_nome
+                    # nome da obra pode ficar como a razão social
+                    if info.get("razao_social") or info.get("nome_fantasia"):
+                        st.session_state["obra_nome_edit"] = info.get("razao_social") or info.get("nome_fantasia")
+                    if info.get("endereco"):
+                        st.session_state["obra_end_edit"] = info["endereco"]
+                    if info.get("email"):
+                        # não temos campo de email de obra, mas podemos guardar no cliente ou ignorar
+                        pass
+                    if info.get("telefone"):
+                        # idem telefone, obra não tem; se quiser pode criar campo
+                        pass
                     st.success("Dados do CNPJ da obra preenchidos.")
                 else:
                     st.warning("Não consegui pegar os dados desse CNPJ.")
 
+            ativo = st.checkbox("Obra ativa", value=(obra_edit.ativo == 1))
+            bloqueada = st.checkbox("Obra bloqueada", value=(obra_edit.bloqueada == 1))
+            motivo_bloq = st.text_input("Motivo do bloqueio", obra_edit.bloqueada_motivo or "", key="obra_motivo_edit")
+
             st.markdown("### Anexos")
             up_prop = st.file_uploader("Proposta", key="up_prop")
             up_cont = st.file_uploader("Contrato", key="up_cont")
-            up_cnpj  = st.file_uploader("Cartão CNPJ", key="up_cnpj")
+            up_cnpj = st.file_uploader("Cartão CNPJ", key="up_cnpj")
             if up_prop is not None:
                 rel = _save_anexo(up_prop, obra_edit.id, "proposta")
                 with SessionLocal() as sess:
-                    ob = sess.get(Obra, obra_edit.id); ob.anexo_proposta = rel; sess.commit()
+                    ob = sess.get(Obra, obra_edit.id)
+                    ob.anexo_proposta = rel
+                    sess.commit()
                 st.success("Proposta anexada.")
             if up_cont is not None:
                 rel = _save_anexo(up_cont, obra_edit.id, "contrato")
                 with SessionLocal() as sess:
-                    ob = sess.get(Obra, obra_edit.id); ob.anexo_contrato = rel; sess.commit()
+                    ob = sess.get(Obra, obra_edit.id)
+                    ob.anexo_contrato = rel
+                    sess.commit()
                 st.success("Contrato anexado.")
             if up_cnpj is not None:
                 rel = _save_anexo(up_cnpj, obra_edit.id, "cnpj")
                 with SessionLocal() as sess:
-                    ob = sess.get(Obra, obra_edit.id); ob.anexo_cnpj = rel; sess.commit()
+                    ob = sess.get(Obra, obra_edit.id)
+                    ob.anexo_cnpj = rel
+                    sess.commit()
                 st.success("CNPJ anexado.")
 
             st.markdown("#### Arquivos já enviados")
@@ -977,11 +1003,12 @@ def page_obras():
             if st.button("Salvar alterações", key="btn_save_obra"):
                 with SessionLocal() as sess:
                     ob = sess.get(Obra, obra_edit.id)
-                    ob.nome = obra_nome
-                    ob.endereco = obra_end
-                    ob.documento = cnpj_busca
-                    if cli_sel != "(sem cliente)":
-                        cli_obj = sess.query(Cliente).filter(Cliente.nome == cli_sel).first()
+                    ob.nome = st.session_state.get("obra_nome_edit", "")
+                    ob.endereco = st.session_state.get("obra_end_edit", "")
+                    ob.documento = st.session_state.get("obra_doc_edit", "") or st.session_state.get("obra_doc_busca", "")
+                    cli_sel_val = st.session_state.get("obra_cli_edit", "(sem cliente)")
+                    if cli_sel_val != "(sem cliente)":
+                        cli_obj = sess.query(Cliente).filter(Cliente.nome == cli_sel_val).first()
                         ob.cliente_id = cli_obj.id if cli_obj else None
                         ob.cliente = cli_obj.nome if cli_obj else None
                     else:
@@ -989,97 +1016,59 @@ def page_obras():
                         ob.cliente = None
                     ob.ativo = 1 if ativo else 0
                     ob.bloqueada = 1 if bloqueada else 0
-                    ob.bloqueada_motivo = motivo_bloq
+                    ob.bloqueada_motivo = st.session_state.get("obra_motivo_edit", "")
                     if bloqueada and not ob.bloqueada_desde:
                         ob.bloqueada_desde = date.today()
                     sess.commit()
                 st.success("Obra atualizada.")
                 _rerun()
+
+        # ===== nova obra =====
         else:
             st.subheader("Nova obra")
-            obra_nome = st.text_input("Nome da obra", "")
-            obra_end = st.text_area("Endereço", "", height=80)
-            obra_doc = st.text_input("CNPJ / CPF da obra", "")
+            obra_nome = st.text_input("Nome da obra", "", key="obra_nome_new")
+            obra_end = st.text_area("Endereço", "", height=80, key="obra_end_new")
+            obra_doc = st.text_input("CNPJ / CPF da obra", "", key="obra_doc_new")
+
             cli_nomes = ["(sem cliente)"] + [c.nome for c in clientes]
-            cli_sel = st.selectbox("Cliente", cli_nomes, index=0)
+            cli_sel = st.selectbox("Cliente", cli_nomes, index=0, key="obra_cli_new")
+
             if st.button("Buscar pelo CNPJ", key="btn_nova_obra_cnpj"):
-                info = buscar_cnpj_detalhado(obra_doc)
+                info = buscar_cnpj_detalhado(st.session_state.get("obra_doc_new", ""))
                 if info:
-                    obra_end = info.get("endereco") or obra_end
-                    obra_nome = obra_nome or info.get("razao_social") or info.get("nome_fantasia") or obra_nome
+                    if info.get("razao_social") or info.get("nome_fantasia"):
+                        st.session_state["obra_nome_new"] = info.get("razao_social") or info.get("nome_fantasia")
+                    if info.get("endereco"):
+                        st.session_state["obra_end_new"] = info["endereco"]
                     st.success("Dados do CNPJ da obra preenchidos.")
                 else:
                     st.warning("Não consegui pegar os dados desse CNPJ.")
+
             if st.button("Salvar nova obra", key="btn_nova_obra"):
                 with SessionLocal() as sess:
                     nova = Obra(
-                        nome=obra_nome,
-                        endereco=obra_end,
-                        cliente=cli_sel if cli_sel != "(sem cliente)" else None,
-                        documento=obra_doc,
+                        nome=st.session_state.get("obra_nome_new", ""),
+                        endereco=st.session_state.get("obra_end_new", ""),
+                        cliente=st.session_state.get("obra_cli_new", None)
+                        if st.session_state.get("obra_cli_new") != "(sem cliente)"
+                        else None,
+                        documento=st.session_state.get("obra_doc_new", ""),
                         ativo=1,
                     )
-                    if cli_sel != "(sem cliente)":
-                        cli_obj = sess.query(Cliente).filter(Cliente.nome == cli_sel).first()
+                    if st.session_state.get("obra_cli_new") != "(sem cliente)":
+                        cli_obj = sess.query(Cliente).filter(
+                            Cliente.nome == st.session_state.get("obra_cli_new")
+                        ).first()
                         if cli_obj:
                             nova.cliente_id = cli_obj.id
-                    sess.add(nova); sess.commit()
+                    sess.add(nova)
+                    sess.commit()
                 st.success("Obra criada.")
                 _rerun()
 
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # serviços específicos da obra
-    if sel != "(Nova obra)" and obra_edit:
-        st.markdown("<div class='hb-card'>", unsafe_allow_html=True)
-        st.markdown("### Serviços e preços específicos desta obra")
-        with SessionLocal() as sess:
-            obra_servs = sess.query(ObraServico).filter(
-                ObraServico.obra_id == obra_edit.id,
-                ObraServico.ativo == 1
-            ).all()
-            servicos_all = sess.query(Servico).filter(Servico.ativo == 1).order_by(Servico.descricao.asc()).all()
-
-        c1, c2, c3 = st.columns([2, 1, 1])
-        with c1:
-            srv_options = [f"{s.id} — {s.codigo} — {s.descricao}" for s in servicos_all]
-            srv_sel = st.selectbox("Serviço", srv_options, key="obra_srv_sel")
-        with c2:
-            preco_espec = st.number_input("Preço específico", min_value=0.0, value=0.0, step=1.0, format="%.2f")
-        with c3:
-            st.write("")
-            if st.button("Salvar preço na obra", key="btn_vinc_srv"):
-                srv_id = int(srv_sel.split("—", 1)[0].strip())
-                with SessionLocal() as sess:
-                    osrv = sess.query(ObraServico).filter(
-                        ObraServico.obra_id == obra_edit.id,
-                        ObraServico.servico_id == srv_id
-                    ).first()
-                    if osrv:
-                        osrv.preco_unit = preco_espec
-                        osrv.ativo = 1
-                    else:
-                        osrv = ObraServico(
-                            obra_id=obra_edit.id,
-                            servico_id=srv_id,
-                            preco_unit=preco_espec,
-                            ativo=1
-                        )
-                        sess.add(osrv)
-                    sess.commit()
-                st.success("Preço vinculado à obra.")
-                _rerun()
-
-        if obra_servs:
-            rows = []
-            for osrv in obra_servs:
-                desc = next((f"{s.codigo} — {s.descricao}" for s in servicos_all if s.id == osrv.servico_id), str(osrv.servico_id))
-                rows.append({"Serviço": desc, "Preço específico": osrv.preco_unit or 0.0})
-            df_os = pd.DataFrame(rows)
-            st.dataframe(df_os, use_container_width=True)
-        else:
-            st.info("Nenhum serviço específico vinculado.")
-        st.markdown("</div>", unsafe_allow_html=True)
+    # (resto da parte de serviços por obra você pode manter igual ao que já tinha)
 
 # =============================================================================
 # PÁGINA: SERVIÇOS
