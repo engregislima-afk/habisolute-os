@@ -22,33 +22,18 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship, Session, selectinload
 
-# ReportLab (pode não existir no Render)
+# ReportLab
+from reportlab.lib.units import mm
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_CENTER
+from reportlab.platypus import (
+    SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
+)
 try:
-    from reportlab.lib.units import mm
-    from reportlab.lib import colors
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.enums import TA_CENTER
-    from reportlab.lib.pagesizes import A4, landscape
-    from reportlab.platypus import (
-        SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
-    )
-    try:
-        from reportlab.platypus import KeepTogether
-    except Exception:
-        from reportlab.platypus.flowables import KeepTogether
-    REPORTLAB_AVAILABLE = True
-except ModuleNotFoundError:
-    # vamos rodar o app mesmo assim; PDFs vão avisar que não dá
-    REPORTLAB_AVAILABLE = False
-    mm = None
-    colors = None
-    TA_CENTER = None
-    # criamos dummies pra evitar NameError em definição de funções
-    def getSampleStyleSheet():
-        return {}
-    class ParagraphStyle: ...
-    def A4(): ...
-    def landscape(x): ...
+    from reportlab.platypus import KeepTogether
+except Exception:
+    from reportlab.platypus.flowables import KeepTogether
 
 # =============================================================================
 # CONFIG
@@ -250,6 +235,21 @@ def flash_render(clear: bool = True):
         banner(m["k"], m["t"])
     if clear:
         st.session_state["_flash"] = []
+
+def notify(kind: str, text: str):
+    """Mostra aviso no topo (flash) e, se possível, toast."""
+    flash(kind, text)
+    icon = "ℹ️"
+    if kind == "success":
+        icon = "✅"
+    elif kind == "warn":
+        icon = "⚠️"
+    elif kind == "error":
+        icon = "❌"
+    try:
+        st.toast(text, icon=icon)
+    except Exception:
+        pass
 
 def _render_header():
     st.markdown("<div style='height:6px;background:linear-gradient(90deg,#f97316,#ffb267);border-radius:6px;margin-bottom:.6rem'></div>", unsafe_allow_html=True)
@@ -553,15 +553,13 @@ def to_df(sess: Session, table) -> pd.DataFrame:
 # =============================================================================
 # PDF helpers
 # =============================================================================
-styles = getSampleStyleSheet() if REPORTLAB_AVAILABLE else {}
-styleN = styles["BodyText"] if REPORTLAB_AVAILABLE else None
-styleSmall = ParagraphStyle("small", parent=styleN, fontSize=9, leading=11) if REPORTLAB_AVAILABLE else None
-HB_ORANGE = colors.HexColor("#FF7A00") if REPORTLAB_AVAILABLE else None
+styles = getSampleStyleSheet()
+styleN = styles["BodyText"]
+styleSmall = ParagraphStyle("small", parent=styleN, fontSize=9, leading=11)
+HB_ORANGE = colors.HexColor("#FF7A00")
 FORM_CODE = "FORM.H.012.00"
 
 def _header_vertical_centralizado():
-    if not REPORTLAB_AVAILABLE:
-        raise RuntimeError("ReportLab não está instalado no servidor.")
     p1 = Paragraph("<b>Habisolute Engenharia e Controle Tecnológico</b>", ParagraphStyle("hdr1", parent=styleN, fontSize=11, alignment=TA_CENTER))
     p2 = Paragraph("contato@habisoluteengenharia.com.br", ParagraphStyle("hdr2", parent=styleN, fontSize=9, alignment=TA_CENTER))
     p3 = Paragraph("(16) 3877-9480", ParagraphStyle("hdr3", parent=styleN, fontSize=9, alignment=TA_CENTER))
@@ -587,8 +585,6 @@ def _on_page(canvas, doc, titulo: str = ""):
     canvas.restoreState()
 
 def gerar_pdf_os(os_row, obra_row, itens: list[dict], show_prices: bool, logo_bytes: bytes | None, signature_bytes: bytes | None = None) -> bytes:
-    if not REPORTLAB_AVAILABLE:
-        raise RuntimeError("ReportLab não está instalado no servidor.")
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=28, bottomMargin=40, leftMargin=14, rightMargin=14)
     story = []
@@ -651,9 +647,8 @@ def gerar_pdf_os(os_row, obra_row, itens: list[dict], show_prices: bool, logo_by
     doc.build(story, onFirstPage=lambda c,d:_on_page(c,d,""), onLaterPages=lambda c,d:_on_page(c,d,""))
     return buf.getvalue()
 
+# ===== PDF de MEDIÇÃO com RESUMO =====
 def gerar_pdf_medicao(obra_nome: str, periodo_str: str, linhas: list[dict], medicao_num: int, signature_bytes: bytes | None = None) -> bytes:
-    if not REPORTLAB_AVAILABLE:
-        raise RuntimeError("ReportLab não está instalado no servidor.")
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=landscape(A4), topMargin=28, bottomMargin=40, leftMargin=14, rightMargin=14)
     story = []
@@ -686,7 +681,6 @@ def gerar_pdf_medicao(obra_nome: str, periodo_str: str, linhas: list[dict], medi
     ]))
     story += [tit_tbl, Spacer(1, 6)]
 
-    # tabela detalhada
     headers = ["Data", "OS", "Código", "Descrição", "Un", "Qtd", "Preço", "Subtotal"]
     data_rows = [headers]
     for r in linhas:
@@ -718,7 +712,6 @@ def gerar_pdf_medicao(obra_nome: str, periodo_str: str, linhas: list[dict], medi
     story.append(tbl)
     story.append(Spacer(1, 10))
 
-    # RESUMO por serviço
     story.append(Paragraph("<b>RESUMO DE SERVIÇOS</b>", ParagraphStyle("r1", parent=styleN, fontSize=10, alignment=TA_CENTER)))
     resumo = {}
     total_geral = 0.0
@@ -753,7 +746,6 @@ def gerar_pdf_medicao(obra_nome: str, periodo_str: str, linhas: list[dict], medi
     story.append(res_tbl)
     story.append(Spacer(1, 8))
 
-    # total geral
     total_box = Table(
         [[Paragraph("<b>Total geral da medição:</b>", styleN),
           Paragraph(f"<b>{format_brl(total_geral)}</b>", styleN)]],
@@ -798,13 +790,12 @@ def obter_os_com_itens(sess: Session, os_id: int):
     return os_row, obra_row, itens
 
 # =============================================================================
-# PÁGINA: CLIENTES
+# PÁGINA: CLIENTES (ATUALIZADA)
 # =============================================================================
 def page_clientes():
     st.markdown("<h4>Cadastro: Clientes</h4>", unsafe_allow_html=True)
     st.markdown("<div class='hb-card'>", unsafe_allow_html=True)
 
-    # carrega lista
     with SessionLocal() as sess:
         clientes = sess.query(Cliente).order_by(Cliente.nome.asc()).all()
 
@@ -812,17 +803,16 @@ def page_clientes():
     with col_list:
         ops = ["(Novo cliente)"] + [f"{c.id} — {c.nome}" for c in clientes]
         sel = st.selectbox("Selecione", ops, label_visibility="collapsed", key="cli_sel")
+        if sel != "(Novo cliente)":
+            st.button("Editar selecionado", use_container_width=True, key="cli_btn_edit_info")
 
     with col_form:
-        # =========================================================
-        # EDITAR CLIENTE
-        # =========================================================
+        # editar
         if sel != "(Novo cliente)":
             cli_id = int(sel.split("—", 1)[0].strip())
             with SessionLocal() as sess:
                 cli = sess.get(Cliente, cli_id)
 
-            # se houve um prefill de CNPJ no run anterior, aplica ANTES de criar os widgets
             prefill = st.session_state.pop("cli_prefill_edit", None)
             if prefill:
                 st.session_state["cli_nome"] = prefill.get("nome", cli.nome)
@@ -832,31 +822,16 @@ def page_clientes():
                 st.session_state["cli_email"] = prefill.get("email", cli.email or "")
                 st.session_state["cli_tel"] = prefill.get("tel", cli.telefone or "")
 
-            # agora podemos criar os inputs com keys fixas
-            nome = st.text_input("Nome / Razão social",
-                                 value=st.session_state.get("cli_nome", cli.nome),
-                                 key="cli_nome")
-            doc = st.text_input("CNPJ / CPF",
-                                 value=st.session_state.get("cli_doc_edit", cli.documento or ""),
-                                 key="cli_doc_edit")
-            end = st.text_area("Endereço",
-                               value=st.session_state.get("cli_end", cli.endereco or ""),
-                               height=80,
-                               key="cli_end")
-            contato = st.text_input("Contato",
-                                    value=st.session_state.get("cli_contato", cli.contato or ""),
-                                    key="cli_contato")
-            email = st.text_input("Email",
-                                  value=st.session_state.get("cli_email", cli.email or ""),
-                                  key="cli_email")
-            tel = st.text_input("Telefone",
-                                value=st.session_state.get("cli_tel", cli.telefone or ""),
-                                key="cli_tel")
+            nome = st.text_input("Nome / Razão social", st.session_state.get("cli_nome", cli.nome), key="cli_nome")
+            doc = st.text_input("CNPJ / CPF", st.session_state.get("cli_doc_edit", cli.documento or ""), key="cli_doc_edit")
+            end = st.text_area("Endereço", st.session_state.get("cli_end", cli.endereco or ""), height=80, key="cli_end")
+            contato = st.text_input("Contato", st.session_state.get("cli_contato", cli.contato or ""), key="cli_contato")
+            email = st.text_input("Email", st.session_state.get("cli_email", cli.email or ""), key="cli_email")
+            tel = st.text_input("Telefone", st.session_state.get("cli_tel", cli.telefone or ""), key="cli_tel")
 
             if st.button("Buscar dados pelo CNPJ", key="btn_buscar_cli_cnpj"):
                 info = buscar_cnpj_detalhado(st.session_state.get("cli_doc_edit", ""))
                 if info:
-                    # guarda para o PRÓXIMO run
                     st.session_state["cli_prefill_edit"] = {
                         "nome": info.get("razao_social") or info.get("nome_fantasia") or st.session_state.get("cli_nome", ""),
                         "doc": st.session_state.get("cli_doc_edit", ""),
@@ -865,30 +840,30 @@ def page_clientes():
                         "email": info.get("email") or st.session_state.get("cli_email", ""),
                         "tel": info.get("telefone") or st.session_state.get("cli_tel", ""),
                     }
-                    st.success("Dados do CNPJ carregados.")
+                    notify("success", "Dados do CNPJ carregados.")
                     _rerun()
                 else:
-                    st.warning("Não consegui buscar esse CNPJ.")
+                    notify("warn", "Não consegui buscar esse CNPJ.")
 
             ativo = st.checkbox("Ativo", value=(cli.ativo == 1))
 
             if st.button("Salvar cliente", key="btn_salvar_cli"):
-                with SessionLocal() as sess:
-                    c = sess.get(Cliente, cli_id)
-                    c.nome = st.session_state.get("cli_nome", "")
-                    c.documento = st.session_state.get("cli_doc_edit", "")
-                    c.endereco = st.session_state.get("cli_end", "")
-                    c.contato = st.session_state.get("cli_contato", "")
-                    c.email = st.session_state.get("cli_email", "")
-                    c.telefone = st.session_state.get("cli_tel", "")
-                    c.ativo = 1 if ativo else 0
-                    sess.commit()
-                st.success("Cliente atualizado.")
-                _rerun()
-
-        # =========================================================
-        # NOVO CLIENTE
-        # =========================================================
+                try:
+                    with SessionLocal() as sess:
+                        c = sess.get(Cliente, cli_id)
+                        c.nome = st.session_state.get("cli_nome", "")
+                        c.documento = st.session_state.get("cli_doc_edit", "")
+                        c.endereco = st.session_state.get("cli_end", "")
+                        c.contato = st.session_state.get("cli_contato", "")
+                        c.email = st.session_state.get("cli_email", "")
+                        c.telefone = st.session_state.get("cli_tel", "")
+                        c.ativo = 1 if ativo else 0
+                        sess.commit()
+                    notify("success", "Cliente salvo com sucesso.")
+                    _rerun()
+                except Exception:
+                    notify("error", "Cliente não foi salvo. Verifique os dados.")
+        # novo
         else:
             prefill = st.session_state.pop("cli_prefill_new", None)
             if prefill:
@@ -899,25 +874,12 @@ def page_clientes():
                 st.session_state["new_cli_email"] = prefill.get("email", "")
                 st.session_state["new_cli_tel"] = prefill.get("tel", "")
 
-            nome = st.text_input("Nome / Razão social",
-                                 value=st.session_state.get("new_cli_nome", ""),
-                                 key="new_cli_nome")
-            doc = st.text_input("CNPJ / CPF",
-                                value=st.session_state.get("new_cli_doc", ""),
-                                key="new_cli_doc")
-            end = st.text_area("Endereço",
-                               value=st.session_state.get("new_cli_end", ""),
-                               height=80,
-                               key="new_cli_end")
-            contato = st.text_input("Contato",
-                                    value=st.session_state.get("new_cli_contato", ""),
-                                    key="new_cli_contato")
-            email = st.text_input("Email",
-                                  value=st.session_state.get("new_cli_email", ""),
-                                  key="new_cli_email")
-            tel = st.text_input("Telefone",
-                                value=st.session_state.get("new_cli_tel", ""),
-                                key="new_cli_tel")
+            nome = st.text_input("Nome / Razão social", st.session_state.get("new_cli_nome", ""), key="new_cli_nome")
+            doc = st.text_input("CNPJ / CPF", st.session_state.get("new_cli_doc", ""), key="new_cli_doc")
+            end = st.text_area("Endereço", st.session_state.get("new_cli_end", ""), height=80, key="new_cli_end")
+            contato = st.text_input("Contato", st.session_state.get("new_cli_contato", ""), key="new_cli_contato")
+            email = st.text_input("Email", st.session_state.get("new_cli_email", ""), key="new_cli_email")
+            tel = st.text_input("Telefone", st.session_state.get("new_cli_tel", ""), key="new_cli_tel")
 
             if st.button("Buscar dados pelo CNPJ", key="btn_buscar_cli_cnpj_new"):
                 info = buscar_cnpj_detalhado(st.session_state.get("new_cli_doc", ""))
@@ -930,31 +892,34 @@ def page_clientes():
                         "email": info.get("email") or st.session_state.get("new_cli_email", ""),
                         "tel": info.get("telefone") or st.session_state.get("new_cli_tel", ""),
                     }
-                    st.success("Dados do CNPJ carregados.")
+                    notify("success", "Dados do CNPJ carregados.")
                     _rerun()
                 else:
-                    st.warning("Não consegui buscar esse CNPJ.")
+                    notify("warn", "Não consegui buscar esse CNPJ.")
 
             if st.button("Criar cliente", key="btn_criar_cli"):
-                with SessionLocal() as sess:
-                    c = Cliente(
-                        nome=st.session_state.get("new_cli_nome", ""),
-                        documento=st.session_state.get("new_cli_doc", ""),
-                        endereco=st.session_state.get("new_cli_end", ""),
-                        contato=st.session_state.get("new_cli_contato", ""),
-                        email=st.session_state.get("new_cli_email", ""),
-                        telefone=st.session_state.get("new_cli_tel", ""),
-                        ativo=1,
-                    )
-                    sess.add(c)
-                    sess.commit()
-                st.success("Cliente criado.")
-                _rerun()
+                try:
+                    with SessionLocal() as sess:
+                        c = Cliente(
+                            nome=st.session_state.get("new_cli_nome", ""),
+                            documento=st.session_state.get("new_cli_doc", ""),
+                            endereco=st.session_state.get("new_cli_end", ""),
+                            contato=st.session_state.get("new_cli_contato", ""),
+                            email=st.session_state.get("new_cli_email", ""),
+                            telefone=st.session_state.get("new_cli_tel", ""),
+                            ativo=1,
+                        )
+                        sess.add(c)
+                        sess.commit()
+                    notify("success", "Cliente criado com sucesso.")
+                    _rerun()
+                except Exception:
+                    notify("error", "Cliente não foi criado. Verifique os dados.")
 
     st.markdown("</div>", unsafe_allow_html=True)
 
 # =============================================================================
-# PÁGINA: OBRAS
+# PÁGINA: OBRAS (ATUALIZADA)
 # =============================================================================
 def page_obras():
     st.markdown("<h4>Cadastro: Obras</h4>", unsafe_allow_html=True)
@@ -969,6 +934,8 @@ def page_obras():
     with col_list:
         nomes_obras = ["(Nova obra)"] + [f"{o.id} — {o.nome}" for o in obras]
         sel = st.selectbox("Selecione", nomes_obras, label_visibility="collapsed", key="obra_sel_combo")
+        if sel != "(Nova obra)":
+            st.button("Editar selecionada", use_container_width=True, key="obra_btn_edit_info")
 
     obra_edit = None
     if sel != "(Nova obra)":
@@ -977,9 +944,7 @@ def page_obras():
             obra_edit = sess.get(Obra, obra_id)
 
     with col_form:
-        # =========================================================
-        # EDITAR OBRA
-        # =========================================================
+        # editar
         if obra_edit:
             st.subheader(f"Editar obra: {obra_edit.nome}")
 
@@ -989,16 +954,9 @@ def page_obras():
                 st.session_state["obra_end_edit"] = prefill.get("endereco", obra_edit.endereco or "")
                 st.session_state["obra_doc_edit"] = prefill.get("doc", obra_edit.documento or "")
 
-            obra_nome = st.text_input("Nome da obra",
-                                      value=st.session_state.get("obra_nome_edit", obra_edit.nome),
-                                      key="obra_nome_edit")
-            obra_end = st.text_area("Endereço",
-                                    value=st.session_state.get("obra_end_edit", obra_edit.endereco or ""),
-                                    height=80,
-                                    key="obra_end_edit")
-            obra_doc = st.text_input("CNPJ / CPF da obra",
-                                     value=st.session_state.get("obra_doc_edit", obra_edit.documento or ""),
-                                     key="obra_doc_edit")
+            obra_nome = st.text_input("Nome da obra", st.session_state.get("obra_nome_edit", obra_edit.nome), key="obra_nome_edit")
+            obra_end = st.text_area("Endereço", st.session_state.get("obra_end_edit", obra_edit.endereco or ""), height=80, key="obra_end_edit")
+            obra_doc = st.text_input("CNPJ / CPF da obra", st.session_state.get("obra_doc_edit", obra_edit.documento or ""), key="obra_doc_edit")
 
             cli_nomes = ["(sem cliente)"] + [c.nome for c in clientes]
             cli_default = 0
@@ -1020,36 +978,34 @@ def page_obras():
                         "endereco": info.get("endereco") or st.session_state.get("obra_end_edit", obra_edit.endereco or ""),
                         "doc": st.session_state.get("obra_doc_busca", ""),
                     }
-                    st.success("Dados do CNPJ da obra preenchidos.")
+                    notify("success", "Dados do CNPJ da obra preenchidos.")
                     _rerun()
                 else:
-                    st.warning("Não consegui pegar os dados desse CNPJ.")
+                    notify("warn", "Não consegui pegar os dados desse CNPJ.")
 
             ativo = st.checkbox("Obra ativa", value=(obra_edit.ativo == 1))
             bloqueada = st.checkbox("Obra bloqueada", value=(obra_edit.bloqueada == 1))
-            motivo_bloq = st.text_input("Motivo do bloqueio",
-                                        value=obra_edit.bloqueada_motivo or "",
-                                        key="obra_motivo_edit")
+            motivo_bloq = st.text_input("Motivo do bloqueio", value=obra_edit.bloqueada_motivo or "", key="obra_motivo_edit")
 
             st.markdown("### Anexos")
             up_prop = st.file_uploader("Proposta", key="up_prop")
             up_cont = st.file_uploader("Contrato", key="up_cont")
-            up_cnpj = st.file_uploader("Cartão CNPJ", key="up_cnpj")
+            up_cnpj  = st.file_uploader("Cartão CNPJ", key="up_cnpj")
             if up_prop is not None:
                 rel = _save_anexo(up_prop, obra_edit.id, "proposta")
                 with SessionLocal() as sess:
                     ob = sess.get(Obra, obra_edit.id); ob.anexo_proposta = rel; sess.commit()
-                st.success("Proposta anexada.")
+                notify("success", "Proposta anexada.")
             if up_cont is not None:
                 rel = _save_anexo(up_cont, obra_edit.id, "contrato")
                 with SessionLocal() as sess:
                     ob = sess.get(Obra, obra_edit.id); ob.anexo_contrato = rel; sess.commit()
-                st.success("Contrato anexado.")
+                notify("success", "Contrato anexado.")
             if up_cnpj is not None:
                 rel = _save_anexo(up_cnpj, obra_edit.id, "cnpj")
                 with SessionLocal() as sess:
                     ob = sess.get(Obra, obra_edit.id); ob.anexo_cnpj = rel; sess.commit()
-                st.success("CNPJ anexado.")
+                notify("success", "CNPJ anexado.")
 
             st.markdown("#### Arquivos já enviados")
             _download_btn_if_exists("Baixar proposta", obra_edit.anexo_proposta)
@@ -1057,31 +1013,31 @@ def page_obras():
             _download_btn_if_exists("Baixar CNPJ", obra_edit.anexo_cnpj)
 
             if st.button("Salvar alterações", key="btn_save_obra"):
-                with SessionLocal() as sess:
-                    ob = sess.get(Obra, obra_edit.id)
-                    ob.nome = st.session_state.get("obra_nome_edit", "")
-                    ob.endereco = st.session_state.get("obra_end_edit", "")
-                    ob.documento = st.session_state.get("obra_doc_edit", "") or st.session_state.get("obra_doc_busca", "")
-                    cli_sel_val = st.session_state.get("obra_cli_edit", "(sem cliente)")
-                    if cli_sel_val != "(sem cliente)":
-                        cli_obj = sess.query(Cliente).filter(Cliente.nome == cli_sel_val).first()
-                        ob.cliente_id = cli_obj.id if cli_obj else None
-                        ob.cliente = cli_obj.nome if cli_obj else None
-                    else:
-                        ob.cliente_id = None
-                        ob.cliente = None
-                    ob.ativo = 1 if ativo else 0
-                    ob.bloqueada = 1 if bloqueada else 0
-                    ob.bloqueada_motivo = st.session_state.get("obra_motivo_edit", "")
-                    if bloqueada and not ob.bloqueada_desde:
-                        ob.bloqueada_desde = date.today()
-                    sess.commit()
-                st.success("Obra atualizada.")
-                _rerun()
-
-        # =========================================================
-        # NOVA OBRA
-        # =========================================================
+                try:
+                    with SessionLocal() as sess:
+                        ob = sess.get(Obra, obra_edit.id)
+                        ob.nome = st.session_state.get("obra_nome_edit", "")
+                        ob.endereco = st.session_state.get("obra_end_edit", "")
+                        ob.documento = st.session_state.get("obra_doc_edit", "") or st.session_state.get("obra_doc_busca", "")
+                        cli_sel_val = st.session_state.get("obra_cli_edit", "(sem cliente)")
+                        if cli_sel_val != "(sem cliente)":
+                            cli_obj = sess.query(Cliente).filter(Cliente.nome == cli_sel_val).first()
+                            ob.cliente_id = cli_obj.id if cli_obj else None
+                            ob.cliente = cli_obj.nome if cli_obj else None
+                        else:
+                            ob.cliente_id = None
+                            ob.cliente = None
+                        ob.ativo = 1 if ativo else 0
+                        ob.bloqueada = 1 if bloqueada else 0
+                        ob.bloqueada_motivo = st.session_state.get("obra_motivo_edit", "")
+                        if bloqueada and not ob.bloqueada_desde:
+                            ob.bloqueada_desde = date.today()
+                        sess.commit()
+                    notify("success", "Obra salva com sucesso.")
+                    _rerun()
+                except Exception:
+                    notify("error", "Obra não foi salva. Verifique os dados.")
+        # nova
         else:
             st.subheader("Nova obra")
 
@@ -1091,16 +1047,9 @@ def page_obras():
                 st.session_state["obra_end_new"] = prefill.get("endereco", "")
                 st.session_state["obra_doc_new"] = prefill.get("doc", "")
 
-            obra_nome = st.text_input("Nome da obra",
-                                      value=st.session_state.get("obra_nome_new", ""),
-                                      key="obra_nome_new")
-            obra_end = st.text_area("Endereço",
-                                    value=st.session_state.get("obra_end_new", ""),
-                                    height=80,
-                                    key="obra_end_new")
-            obra_doc = st.text_input("CNPJ / CPF da obra",
-                                     value=st.session_state.get("obra_doc_new", ""),
-                                     key="obra_doc_new")
+            obra_nome = st.text_input("Nome da obra", st.session_state.get("obra_nome_new", ""), key="obra_nome_new")
+            obra_end = st.text_area("Endereço", st.session_state.get("obra_end_new", ""), height=80, key="obra_end_new")
+            obra_doc = st.text_input("CNPJ / CPF da obra", st.session_state.get("obra_doc_new", ""), key="obra_doc_new")
 
             cli_nomes = ["(sem cliente)"] + [c.nome for c in clientes]
             cli_sel = st.selectbox("Cliente", cli_nomes, index=0, key="obra_cli_new")
@@ -1113,35 +1062,88 @@ def page_obras():
                         "endereco": info.get("endereco") or st.session_state.get("obra_end_new", ""),
                         "doc": st.session_state.get("obra_doc_new", ""),
                     }
-                    st.success("Dados do CNPJ da obra preenchidos.")
+                    notify("success", "Dados do CNPJ da obra preenchidos.")
                     _rerun()
                 else:
-                    st.warning("Não consegui pegar os dados desse CNPJ.")
+                    notify("warn", "Não consegui pegar os dados desse CNPJ.")
 
             if st.button("Salvar nova obra", key="btn_nova_obra"):
-                with SessionLocal() as sess:
-                    nova = Obra(
-                        nome=st.session_state.get("obra_nome_new", ""),
-                        endereco=st.session_state.get("obra_end_new", ""),
-                        cliente=st.session_state.get("obra_cli_new", None)
-                        if st.session_state.get("obra_cli_new") != "(sem cliente)" else None,
-                        documento=st.session_state.get("obra_doc_new", ""),
-                        ativo=1,
-                    )
-                    if st.session_state.get("obra_cli_new") != "(sem cliente)":
-                        cli_obj = sess.query(Cliente).filter(Cliente.nome == st.session_state.get("obra_cli_new")).first()
-                        if cli_obj:
-                            nova.cliente_id = cli_obj.id
-                    sess.add(nova)
-                    sess.commit()
-                st.success("Obra criada.")
-                _rerun()
+                try:
+                    with SessionLocal() as sess:
+                        nova = Obra(
+                            nome=st.session_state.get("obra_nome_new", ""),
+                            endereco=st.session_state.get("obra_end_new", ""),
+                            cliente=st.session_state.get("obra_cli_new", None)
+                            if st.session_state.get("obra_cli_new") != "(sem cliente)" else None,
+                            documento=st.session_state.get("obra_doc_new", ""),
+                            ativo=1,
+                        )
+                        if st.session_state.get("obra_cli_new") != "(sem cliente)":
+                            cli_obj = sess.query(Cliente).filter(Cliente.nome == st.session_state.get("obra_cli_new")).first()
+                            if cli_obj:
+                                nova.cliente_id = cli_obj.id
+                        sess.add(nova); sess.commit()
+                    notify("success", "Obra criada com sucesso.")
+                    _rerun()
+                except Exception:
+                    notify("error", "Obra não foi criada. Verifique os dados.")
 
     st.markdown("</div>", unsafe_allow_html=True)
-    # (mantém o bloco de serviços específicos da obra que você já tinha)
+
+    # serviços específicos da obra (mantém o que já tinha)
+    if sel != "(Nova obra)" and obra_edit:
+        st.markdown("<div class='hb-card'>", unsafe_allow_html=True)
+        st.markdown("### Serviços e preços específicos desta obra")
+        with SessionLocal() as sess:
+            obra_servs = sess.query(ObraServico).filter(
+                ObraServico.obra_id == obra_edit.id,
+                ObraServico.ativo == 1
+            ).all()
+            servicos_all = sess.query(Servico).filter(Servico.ativo == 1).order_by(Servico.descricao.asc()).all()
+
+        c1, c2, c3 = st.columns([2, 1, 1])
+        with c1:
+            srv_options = [f"{s.id} — {s.codigo} — {s.descricao}" for s in servicos_all]
+            srv_sel = st.selectbox("Serviço", srv_options, key="obra_srv_sel")
+        with c2:
+            preco_espec = st.number_input("Preço específico", min_value=0.0, value=0.0, step=1.0, format="%.2f")
+        with c3:
+            st.write("")
+            if st.button("Salvar preço na obra", key="btn_vinc_srv"):
+                srv_id = int(srv_sel.split("—", 1)[0].strip())
+                with SessionLocal() as sess:
+                    osrv = sess.query(ObraServico).filter(
+                        ObraServico.obra_id == obra_edit.id,
+                        ObraServico.servico_id == srv_id
+                    ).first()
+                    if osrv:
+                        osrv.preco_unit = preco_espec
+                        osrv.ativo = 1
+                    else:
+                        osrv = ObraServico(
+                            obra_id=obra_edit.id,
+                            servico_id=srv_id,
+                            preco_unit=preco_espec,
+                            ativo=1
+                        )
+                        sess.add(osrv)
+                    sess.commit()
+                notify("success", "Preço vinculado à obra.")
+                _rerun()
+
+        if obra_servs:
+            rows = []
+            for osrv in obra_servs:
+                desc = next((f"{s.codigo} — {s.descricao}" for s in servicos_all if s.id == osrv.servico_id), str(osrv.servico_id))
+                rows.append({"Serviço": desc, "Preço específico": osrv.preco_unit or 0.0})
+            df_os = pd.DataFrame(rows)
+            st.dataframe(df_os, use_container_width=True)
+        else:
+            st.info("Nenhum serviço específico vinculado.")
+        st.markdown("</div>", unsafe_allow_html=True)
 
 # =============================================================================
-# PÁGINA: SERVIÇOS
+# PÁGINA: SERVIÇOS (ATUALIZADA)
 # =============================================================================
 def page_servicos():
     st.markdown("<h4>Cadastro: Serviços</h4>", unsafe_allow_html=True)
@@ -1151,7 +1153,9 @@ def page_servicos():
     col_list, col_form = st.columns([1.0, 2.4])
     with col_list:
         ops = ["(Novo serviço)"] + [f"{s.id} — {s.codigo} — {s.descricao}" for s in servicos]
-        sel = st.selectbox("Serviços", ops, label_visibility="collapsed")
+        sel = st.selectbox("Serviços", ops, label_visibility="collapsed", key="srv_sel")
+        if sel != "(Novo serviço)":
+            st.button("Editar selecionado", use_container_width=True, key="srv_btn_edit_info")
     with col_form:
         if sel != "(Novo serviço)":
             sv_id = int(sel.split("—", 1)[0].strip())
@@ -1163,49 +1167,53 @@ def page_servicos():
             preco = st.number_input("Preço unitário padrão", min_value=0.0, value=float(sv.preco_unit or 0.0), step=1.0, format="%.2f")
             ativo = st.checkbox("Ativo", value=(sv.ativo == 1))
             if st.button("Salvar serviço"):
-                with SessionLocal() as sess:
-                    s2 = sess.get(Servico, sv_id)
-                    s2.codigo = codigo
-                    s2.descricao = desc
-                    s2.unidade = un
-                    s2.preco_unit = preco
-                    s2.ativo = 1 if ativo else 0
-                    sess.commit()
-                st.success("Serviço atualizado.")
-                _rerun()
+                try:
+                    with SessionLocal() as sess:
+                        s2 = sess.get(Servico, sv_id)
+                        s2.codigo = codigo
+                        s2.descricao = desc
+                        s2.unidade = un
+                        s2.preco_unit = preco
+                        s2.ativo = 1 if ativo else 0
+                        sess.commit()
+                    notify("success", "Serviço salvo com sucesso.")
+                    _rerun()
+                except Exception:
+                    notify("error", "Serviço não foi salvo.")
         else:
             codigo = st.text_input("Código", "")
             desc = st.text_input("Descrição", "")
             un = st.text_input("Unidade", "un")
             preco = st.number_input("Preço unitário padrão", min_value=0.0, value=0.0, step=1.0, format="%.2f")
             if st.button("Criar serviço"):
-                with SessionLocal() as sess:
-                    sv = Servico(
-                        codigo=codigo,
-                        descricao=desc,
-                        unidade=un,
-                        preco_unit=preco,
-                        ativo=1,
-                    )
-                    sess.add(sv); sess.commit()
-                st.success("Serviço criado.")
-                _rerun()
+                try:
+                    with SessionLocal() as sess:
+                        sv = Servico(
+                            codigo=codigo,
+                            descricao=desc,
+                            unidade=un,
+                            preco_unit=preco,
+                            ativo=1,
+                        )
+                        sess.add(sv); sess.commit()
+                    notify("success", "Serviço criado com sucesso.")
+                    _rerun()
+                except Exception:
+                    notify("error", "Serviço não foi criado. Verifique os dados.")
     st.markdown("</div>", unsafe_allow_html=True)
 
 # =============================================================================
-# PÁGINA: EMITIR OS
+# PÁGINA: EMITIR OS (com proteção de '(Cadastre obras)')
 # =============================================================================
 def page_emitir_os():
     st.markdown("<h4>Emitir OS</h4>", unsafe_allow_html=True)
     st.markdown("<div class='hb-card'>", unsafe_allow_html=True)
 
-    # carrega dados
     with SessionLocal() as sess:
         obras = sess.query(Obra).filter(Obra.ativo == 1).order_by(Obra.nome.asc()).all()
         servicos = sess.query(Servico).filter(Servico.ativo == 1).order_by(Servico.descricao.asc()).all()
         os_list = sess.query(OS).order_by(OS.id.desc()).limit(80).all()
 
-    # select de OS
     ops = ["(Nova OS)"] + [f"{o.id} — {o.numero} — {o.status}" for o in os_list]
     default_idx = 0
     if s.get("current_os_id"):
@@ -1225,13 +1233,11 @@ def page_emitir_os():
         os_db = None
         s["current_os_id"] = None
 
-    # opções de obra
     if obras:
         obra_opc = [f"{o.id} — {o.nome}" for o in obras]
     else:
         obra_opc = ["(Cadastre obras)"]
 
-    # valores padrão da OS
     if os_db:
         obra_idx = 0
         for i, o in enumerate(obras):
@@ -1247,71 +1253,57 @@ def page_emitir_os():
         os_status = "Aberta"
         os_obs = ""
 
-    obra_sel = st.selectbox("Obra", obra_opc, index=obra_idx if obras else 0)
-
-    # 👇 este if é o que evita o ValueError
-    if obra_sel.startswith("("):
-        st.warning("Cadastre uma obra em 'Cadastro: Obras' antes de emitir uma OS.")
-        st.markdown("</div>", unsafe_allow_html=True)
-        return
-
-    # daqui pra baixo é seguro converter
-    obra_id = int(obra_sel.split("—", 1)[0].strip())
-
+    obra_sel = st.selectbox("Obra", obra_opc, index=obra_idx if obra_opc else 0)
     st.date_input("Data de emissão", value=data_emissao, key="emit_os_dt")
-    st.selectbox(
-        "Status",
-        STATUS_OPTIONS,
-        index=STATUS_OPTIONS.index(os_status) if os_status in STATUS_OPTIONS else 0,
-        key="emit_os_status",
-    )
+    st.selectbox("Status", STATUS_OPTIONS, index=STATUS_OPTIONS.index(os_status) if os_status in STATUS_OPTIONS else 0, key="emit_os_status")
     os_obs_new = st.text_area("Observações", os_obs, height=110)
 
-    # alerta de documentos da obra
-    obra_obj = next((o for o in obras if o.id == obra_id), None)
+    obra_id = None
+    obra_obj = None
+    if obras and obra_sel != "(Cadastre obras)":
+        obra_id = int(obra_sel.split("—", 1)[0].strip())
+        obra_obj = next((o for o in obras if o.id == obra_id), None)
+
     if obra_obj:
         faltantes = []
-        if not obra_obj.anexo_cnpj:
-            faltantes.append("Cartão CNPJ")
-        if not obra_obj.anexo_proposta:
-            faltantes.append("Proposta")
-        if not obra_obj.anexo_contrato:
-            faltantes.append("Contrato")
+        if not obra_obj.anexo_cnpj: faltantes.append("Cartão CNPJ")
+        if not obra_obj.anexo_proposta: faltantes.append("Proposta")
+        if not obra_obj.anexo_contrato: faltantes.append("Contrato")
         if obra_obj.bloqueada:
             banner("warn", f"Obra bloqueada: {obra_obj.bloqueada_motivo or 'sem motivo cadastrado.'}")
         if faltantes:
             banner("warn", "Documentos da obra faltando: " + ", ".join(faltantes))
 
     if st.button("Salvar OS", use_container_width=True):
-        with SessionLocal() as sess:
-            if modo_novo:
-                num = gerar_numero_os(sess)
-                nova = OS(
-                    numero=num,
-                    data_emissao=s["emit_os_dt"],
-                    obra_id=obra_id,
-                    status=s["emit_os_status"],
-                    observacoes=os_obs_new,
-                )
-                sess.add(nova)
-                sess.commit()
-                s["current_os_id"] = nova.id
-                flash("success", f"OS {num} criada. Agora inclua os serviços.")
-            else:
-                os_obj = sess.get(OS, os_db.id)
-                os_obj.data_emissao = s["emit_os_dt"]
-                os_obj.obra_id = obra_id
-                os_obj.status = s["emit_os_status"]
-                os_obj.observacoes = os_obs_new
-                sess.commit()
-                flash("success", f"OS {os_obj.numero} atualizada.")
-        _rerun()
+        if not obra_id:
+            notify("error", "Cadastre uma obra antes de emitir a OS.")
+        else:
+            with SessionLocal() as sess:
+                if modo_novo:
+                    num = gerar_numero_os(sess)
+                    nova = OS(
+                        numero=num,
+                        data_emissao=s["emit_os_dt"],
+                        obra_id=obra_id,
+                        status=s["emit_os_status"],
+                        observacoes=os_obs_new,
+                    )
+                    sess.add(nova)
+                    sess.commit()
+                    s["current_os_id"] = nova.id
+                    notify("success", f"OS {num} criada. Agora inclua os serviços.")
+                else:
+                    os_obj = sess.get(OS, os_db.id)
+                    os_obj.data_emissao = s["emit_os_dt"]
+                    os_obj.obra_id = obra_id
+                    os_obj.status = s["emit_os_status"]
+                    os_obj.observacoes = os_obs_new
+                    sess.commit()
+                    notify("success", f"OS {os_obj.numero} atualizada.")
+            _rerun()
 
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # =========================
-    # Itens da OS
-    # =========================
     st.markdown("<div class='hb-card'>", unsafe_allow_html=True)
     st.markdown("### Itens da OS", unsafe_allow_html=True)
 
@@ -1320,13 +1312,15 @@ def page_emitir_os():
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    # preços específicos da obra
+    if not obra_id:
+        st.info("Escolha uma obra válida antes de incluir itens.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
     with SessionLocal() as sess:
         precos_espec = {
             x.servico_id: x.preco_unit
-            for x in sess.query(ObraServico).filter(
-                ObraServico.obra_id == obra_id, ObraServico.ativo == 1
-            ).all()
+            for x in sess.query(ObraServico).filter(ObraServico.obra_id == obra_id, ObraServico.ativo == 1).all()
         }
 
     col_s, col_q, col_p, col_btn = st.columns([2.8, 0.9, 1.1, 0.4])
@@ -1337,65 +1331,11 @@ def page_emitir_os():
         qtd = st.number_input("Qtd", min_value=0.0, value=1.0, step=1.0, format="%.2f")
     with col_p:
         srv_id_tmp = int(srv_sel.split("—", 1)[0].strip())
-        preco_sugerido = precos_espec.get(
-            srv_id_tmp,
-            next((s.preco_unit for s in servicos if s.id == srv_id_tmp), 0.0) or 0.0,
-        )
+        preco_sugerido = precos_espec.get(srv_id_tmp, next((s.preco_unit for s in servicos if s.id == srv_id_tmp), 0.0) or 0.0)
         preco_in = st.number_input("Preço unit.", min_value=0.0, value=float(preco_sugerido), step=1.0, format="%.2f")
     with col_btn:
         st.write("")
         add_item = st.button("➕", key="btn_add_item_os")
-
-    if add_item:
-        srv_id = int(srv_sel.split("—", 1)[0].strip())
-        with SessionLocal() as sess:
-            os_obj = sess.get(OS, s["current_os_id"])
-            prec_ob = (
-                sess.query(ObraServico)
-                .filter(ObraServico.obra_id == obra_id,
-                        ObraServico.servico_id == srv_id,
-                        ObraServico.ativo == 1)
-                .first()
-            )
-            sv = sess.get(Servico, srv_id)
-            preco_final = preco_in or (prec_ob.preco_unit if prec_ob else (sv.preco_unit or 0.0))
-            item = OSItem(
-                os_id=os_obj.id,
-                servico_id=sv.id,
-                quantidade_prevista=qtd,
-                preco_unit=preco_final,
-            )
-            sess.add(item)
-            sess.commit()
-        flash("success", "Serviço adicionado à OS.")
-        _rerun()
-
-    # lista de itens
-    with SessionLocal() as sess:
-        os_row, obra_row, itens = obter_os_com_itens(sess, s["current_os_id"])
-    st.markdown("#### Serviços já adicionados a esta OS")
-    if itens:
-        df_it = pd.DataFrame(itens).rename(columns={
-            "codigo": "Código",
-            "descricao": "Descrição",
-            "unidade": "Un",
-            "qtd_prev": "Qtd",
-            "preco_unit": "Preço unit.",
-            "subtotal": "Subtotal",
-        })
-        total = sum(i["subtotal"] for i in itens)
-        st.dataframe(df_it, use_container_width=True, hide_index=True)
-        st.markdown(
-            f"<div class='hb-alert hb-alert-success'><b>Total dos itens desta OS:</b> {format_brl(total)}</div>",
-            unsafe_allow_html=True,
-        )
-    else:
-        st.markdown(
-            "<div class='hb-alert'>Esta OS ainda não tem itens. Adicione usando o botão ➕.</div>",
-            unsafe_allow_html=True,
-        )
-
-    st.markdown("</div>", unsafe_allow_html=True)
 
     if add_item:
         srv_id = int(srv_sel.split("—", 1)[0].strip())
@@ -1415,7 +1355,7 @@ def page_emitir_os():
                 preco_unit=preco_final,
             )
             sess.add(item); sess.commit()
-        flash("success", "Serviço adicionado à OS.")
+        notify("success", "Serviço adicionado à OS.")
         _rerun()
 
     with SessionLocal() as sess:
@@ -1517,23 +1457,20 @@ def page_visualizar_imprimir():
     else:
         banner("info", "Esta OS não possui itens.")
 
-    if not REPORTLAB_AVAILABLE:
-        st.warning("Este servidor não tem o pacote ReportLab instalado, então não dá para gerar o PDF aqui. Instale `reportlab` no build para liberar os botões.")
-    else:
-        sig_bytes = load_signature_bytes()
-        pdf_interno = gerar_pdf_os(os_row, obra_row, itens, show_prices=True, logo_bytes=None, signature_bytes=sig_bytes)
-        pdf_cliente = gerar_pdf_os(os_row, obra_row, itens, show_prices=False, logo_bytes=None, signature_bytes=sig_bytes)
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.download_button("Baixar PDF (interno — com preços)", data=pdf_interno, file_name=f"{os_row.numero}_interno.pdf", mime="application/pdf")
-        with c2:
-            st.download_button("Baixar PDF (cliente — sem preços)", data=pdf_cliente, file_name=f"{os_row.numero}_cliente.pdf", mime="application/pdf")
-        with c3:
-            if st.button("Editar esta OS"):
-                s["current_os_id"] = os_id
-                s["goto_emitir"] = True
-                flash("info", "Você pode editar a OS na aba Emitir OS.")
-                _rerun()
+    sig_bytes = load_signature_bytes()
+    pdf_interno = gerar_pdf_os(os_row, obra_row, itens, show_prices=True, logo_bytes=None, signature_bytes=sig_bytes)
+    pdf_cliente = gerar_pdf_os(os_row, obra_row, itens, show_prices=False, logo_bytes=None, signature_bytes=sig_bytes)
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.download_button("Baixar PDF (interno — com preços)", data=pdf_interno, file_name=f"{os_row.numero}_interno.pdf", mime="application/pdf")
+    with c2:
+        st.download_button("Baixar PDF (cliente — sem preços)", data=pdf_cliente, file_name=f"{os_row.numero}_cliente.pdf", mime="application/pdf")
+    with c3:
+        if st.button("Editar esta OS"):
+            s["current_os_id"] = os_id
+            s["goto_emitir"] = True
+            flash("info", "Você pode editar a OS na aba Emitir OS.")
+            _rerun()
 
     st.markdown("<hr>", unsafe_allow_html=True)
     if st.button("Excluir esta OS", type="secondary"):
@@ -1542,7 +1479,7 @@ def page_visualizar_imprimir():
             if os_del:
                 sess.delete(os_del)
                 sess.commit()
-        flash("success", "OS excluída.")
+        notify("success", "OS excluída.")
         _rerun()
 
     st.markdown("</div>", unsafe_allow_html=True)
@@ -1554,8 +1491,6 @@ def page_medicao():
     st.markdown("<h4>Medição Mensal</h4>", unsafe_allow_html=True)
     st.markdown("<div class='hb-card'>", unsafe_allow_html=True)
 
-    if not REPORTLAB_AVAILABLE:
-        st.warning("Para gerar o PDF da medição é preciso instalar o pacote `reportlab` no ambiente de deploy.")
     with SessionLocal() as sess:
         obras = sess.query(Obra).order_by(Obra.nome.asc()).all()
 
@@ -1626,24 +1561,21 @@ def page_medicao():
         df_med = pd.DataFrame(linhas)
         st.dataframe(df_med, use_container_width=True, hide_index=True)
 
-        if REPORTLAB_AVAILABLE:
-            sig_bytes = load_signature_bytes()
-            periodo_str = f"{ini.strftime('%d/%m/%Y')} a {fim.strftime('%d/%m/%Y')}"
-            pdf = gerar_pdf_medicao(
-                obra_nome=obra_obj.nome if obra_obj else f"Obra {obra_id}",
-                periodo_str=periodo_str,
-                linhas=linhas,
-                medicao_num=medicao_num,
-                signature_bytes=sig_bytes,
-            )
-            st.download_button(
-                "Gerar PDF da medição",
-                data=pdf,
-                file_name=f"medicao_{obra_id}_{ini:%Y%m}_n{medicao_num}.pdf",
-                mime="application/pdf"
-            )
-        else:
-            st.info("Os dados estão aí em cima; instale `reportlab` para gerar o PDF.")
+        sig_bytes = load_signature_bytes()
+        periodo_str = f"{ini.strftime('%d/%m/%Y')} a {fim.strftime('%d/%m/%Y')}"
+        pdf = gerar_pdf_medicao(
+            obra_nome=obra_obj.nome if obra_obj else f"Obra {obra_id}",
+            periodo_str=periodo_str,
+            linhas=linhas,
+            medicao_num=medicao_num,
+            signature_bytes=sig_bytes,
+        )
+        st.download_button(
+            "Gerar PDF da medição",
+            data=pdf,
+            file_name=f"medicao_{obra_id}_{ini:%Y%m}_n{medicao_num}.pdf",
+            mime="application/pdf"
+        )
     else:
         st.info("Nenhuma OS dessa obra dentro do período selecionado.")
 
@@ -1653,8 +1585,6 @@ def page_medicao():
 # RELATÓRIOS
 # =============================================================================
 def gerar_pdf_fechamento(cliente_nome: str, periodo_str: str, linhas: list[dict], signature_bytes: bytes | None = None) -> bytes:
-    if not REPORTLAB_AVAILABLE:
-        raise RuntimeError("ReportLab não está instalado no servidor.")
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=landscape(A4), topMargin=28, bottomMargin=40, leftMargin=14, rightMargin=14)
     story = []
@@ -1693,8 +1623,6 @@ def gerar_pdf_fechamento(cliente_nome: str, periodo_str: str, linhas: list[dict]
 def page_relatorios():
     st.markdown("<h4>Relatórios</h4>", unsafe_allow_html=True)
     st.markdown("<div class='hb-card'>", unsafe_allow_html=True)
-    if not REPORTLAB_AVAILABLE:
-        st.warning("Para baixar o PDF de fechamento é preciso instalar `reportlab`.")
     with SessionLocal() as sess:
         clientes = sess.query(Cliente).order_by(Cliente.nome.asc()).all()
     cli_ops = [f"{c.id} — {c.nome}" for c in clientes]
@@ -1733,15 +1661,14 @@ def page_relatorios():
         df_rel = pd.DataFrame(linhas)
         st.dataframe(df_rel, use_container_width=True, hide_index=True)
         from_name = cli_sel.split("—", 1)[1].strip()
-        if REPORTLAB_AVAILABLE:
-            sig_bytes = load_signature_bytes()
-            pdf = gerar_pdf_fechamento(
-                cliente_nome=from_name,
-                periodo_str=f"{ini.strftime('%d/%m/%Y')} a {fim.strftime('%d/%m/%Y')}",
-                linhas=linhas,
-                signature_bytes=sig_bytes,
-            )
-            st.download_button("Baixar PDF de fechamento", data=pdf, file_name=f"fechamento_{cli_id}_{ini:%Y%m}.pdf", mime="application/pdf")
+        sig_bytes = load_signature_bytes()
+        pdf = gerar_pdf_fechamento(
+            cliente_nome=from_name,
+            periodo_str=f"{ini.strftime('%d/%m/%Y')} a {fim.strftime('%d/%m/%Y')}",
+            linhas=linhas,
+            signature_bytes=sig_bytes,
+        )
+        st.download_button("Baixar PDF de fechamento", data=pdf, file_name=f"fechamento_{cli_id}_{ini:%Y%m}.pdf", mime="application/pdf")
     else:
         st.info("Nada a mostrar nesse período.")
     st.markdown("</div>", unsafe_allow_html=True)
