@@ -189,12 +189,68 @@ def _inject_css(theme: str | None = None):
       --hb-muted: {HB_MUTED};
       --hb-accent: {BRAND_COLOR};
     }}
+
+    /* fundo geral */
     [data-testid="stAppViewContainer"] {{
       background: var(--hb-bg)!important;
     }}
+
+    /* SIDEBAR mais bonita */
     [data-testid="stSidebar"] {{
-      background: radial-gradient(circle at top, rgba(249,115,22,.45) 0%, rgba(249,115,22,0) 50%), linear-gradient(180deg, #2f3137 0%, #d1d5db 100%) !important;
+      background: radial-gradient(circle at top, rgba(249,115,22,.45) 0%, rgba(249,115,22,0) 50%), linear-gradient(180deg, #1f2937 0%, #111827 100%) !important;
+      border-right: 1px solid rgba(255,255,255,.05);
     }}
+
+    /* título do menu */
+    .hb-sidebar-title {{
+      font-weight: 700;
+      font-size: 0.85rem;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: rgba(248,250,252,.55);
+      margin-bottom: .5rem;
+    }}
+
+    /* container do radio */
+    [data-testid="stSidebar"] [role="radiogroup"] > label {{
+      background: rgba(15,23,42,0.1);
+      border: 1px solid transparent;
+      border-radius: 14px;
+      padding: .35rem .55rem .35rem .55rem;
+      transition: all .12s ease-in-out;
+      margin-bottom: .2rem;
+    }}
+
+    /* carinha de "card" do item */
+    [data-testid="stSidebar"] [role="radiogroup"] > label:hover {{
+      background: rgba(255,255,255,0.05);
+      border-color: rgba(249,115,22,0.0);
+      cursor: pointer;
+    }}
+
+    /* bolinha do radio some */
+    [data-testid="stSidebar"] [role="radiogroup"] input[type="radio"] {{
+      display: none;
+    }}
+
+    /* texto do item */
+    [data-testid="stSidebar"] [role="radiogroup"] p {{
+      color: #e2e8f0 !important;
+      font-size: 0.78rem;
+      font-weight: 500;
+    }}
+
+    /* item selecionado */
+    [data-testid="stSidebar"] [role="radiogroup"] > label[data-baseweb="radio"]:has(input:checked) {{
+      background: linear-gradient(90deg, rgba(249,115,22,.42) 0%, rgba(249,115,22,.05) 100%);
+      border: 1px solid rgba(249,115,22,.55);
+      box-shadow: 0 6px 15px rgba(0,0,0,.25);
+    }}
+    [data-testid="stSidebar"] [role="radiogroup"] > label[data-baseweb="radio"]:has(input:checked) p {{
+      color: #fff !important;
+    }}
+
+    /* cards gerais */
     .hb-card {{
       background: rgba(255,255,255,.95);
       border:1px solid rgba(148,163,184,.30);
@@ -202,11 +258,13 @@ def _inject_css(theme: str | None = None):
       padding:16px;
       margin-bottom:14px;
     }}
+
     .hb-alert {{
       background: rgba(219,234,254,0.6); border-left:6px solid #2563eb; border-radius:14px; padding:.55rem .9rem; margin-top:.7rem;
     }}
     .hb-alert-warn {{ background: rgba(254,249,195,.6); border-left-color:#eab308; }}
     .hb-alert-success {{ background: rgba(220,252,231,.6); border-left-color:#22c55e; }}
+
     .stTextInput input, .stTextArea textarea, .stNumberInput input, .stDateInput input {{
       border:1px solid rgba(148,163,184,.55)!important;
       border-radius:10px!important;
@@ -1762,20 +1820,26 @@ def page_export():
 # =============================================================================
 # MENU / ROUTER
 # =============================================================================
-st.sidebar.markdown("### Sistema OS", unsafe_allow_html=True)
+st.sidebar.markdown("<div class='hb-sidebar-title'>SISTEMA OS</div>", unsafe_allow_html=True)
 
-MENU = [
-    "Emitir OS",
-    "Cadastro: Clientes",
-    "Cadastro: Obras",
-    "Cadastro: Serviços",
-    "Visualizar / Imprimir",
-    "Medição Mensal",
-    "Relatórios",
-    "Exportações",
-]
+LABELS = {
+    "Emitir OS": "🧾 Emitir OS",
+    "Cadastro: Clientes": "👤 Cadastro: Clientes",
+    "Cadastro: Obras": "🏗️ Cadastro: Obras",
+    "Cadastro: Serviços": "🛠️ Cadastro: Serviços",
+    "Visualizar / Imprimir": "🖨️ Visualizar / Imprimir",
+    "Medição Mensal": "📅 Medição Mensal",
+    "Relatórios": "📊 Relatórios",
+    "Exportações": "📦 Exportações",
+}
 
-page = st.sidebar.radio("Ir para", MENU, index=0, label_visibility="collapsed")
+page = st.sidebar.radio(
+    "Ir para",
+    MENU,
+    index=0,
+    label_visibility="collapsed",
+    format_func=lambda x: LABELS.get(x, x),
+)
 
 def main_router():
     flash_render()
