@@ -804,6 +804,7 @@ def page_clientes():
     st.markdown("<h4>Cadastro: Clientes</h4>", unsafe_allow_html=True)
     st.markdown("<div class='hb-card'>", unsafe_allow_html=True)
 
+    # carrega lista
     with SessionLocal() as sess:
         clientes = sess.query(Cliente).order_by(Cliente.nome.asc()).all()
 
@@ -813,33 +814,59 @@ def page_clientes():
         sel = st.selectbox("Selecione", ops, label_visibility="collapsed", key="cli_sel")
 
     with col_form:
-        # ===== editar cliente =====
+        # =========================================================
+        # EDITAR CLIENTE
+        # =========================================================
         if sel != "(Novo cliente)":
             cli_id = int(sel.split("—", 1)[0].strip())
             with SessionLocal() as sess:
                 cli = sess.get(Cliente, cli_id)
 
-            # inputs com chave fixa
-            nome = st.text_input("Nome / Razão social", value=cli.nome, key="cli_nome")
-            doc = st.text_input("CNPJ / CPF", value=cli.documento or "", key="cli_doc_edit")
-            end = st.text_area("Endereço", value=cli.endereco or "", height=80, key="cli_end")
-            contato = st.text_input("Contato", value=cli.contato or "", key="cli_contato")
-            email = st.text_input("Email", value=cli.email or "", key="cli_email")
-            tel = st.text_input("Telefone", value=cli.telefone or "", key="cli_tel")
+            # se houve um prefill de CNPJ no run anterior, aplica ANTES de criar os widgets
+            prefill = st.session_state.pop("cli_prefill_edit", None)
+            if prefill:
+                st.session_state["cli_nome"] = prefill.get("nome", cli.nome)
+                st.session_state["cli_doc_edit"] = prefill.get("doc", cli.documento or "")
+                st.session_state["cli_end"] = prefill.get("endereco", cli.endereco or "")
+                st.session_state["cli_contato"] = prefill.get("contato", cli.contato or "")
+                st.session_state["cli_email"] = prefill.get("email", cli.email or "")
+                st.session_state["cli_tel"] = prefill.get("tel", cli.telefone or "")
+
+            # agora podemos criar os inputs com keys fixas
+            nome = st.text_input("Nome / Razão social",
+                                 value=st.session_state.get("cli_nome", cli.nome),
+                                 key="cli_nome")
+            doc = st.text_input("CNPJ / CPF",
+                                 value=st.session_state.get("cli_doc_edit", cli.documento or ""),
+                                 key="cli_doc_edit")
+            end = st.text_area("Endereço",
+                               value=st.session_state.get("cli_end", cli.endereco or ""),
+                               height=80,
+                               key="cli_end")
+            contato = st.text_input("Contato",
+                                    value=st.session_state.get("cli_contato", cli.contato or ""),
+                                    key="cli_contato")
+            email = st.text_input("Email",
+                                  value=st.session_state.get("cli_email", cli.email or ""),
+                                  key="cli_email")
+            tel = st.text_input("Telefone",
+                                value=st.session_state.get("cli_tel", cli.telefone or ""),
+                                key="cli_tel")
 
             if st.button("Buscar dados pelo CNPJ", key="btn_buscar_cli_cnpj"):
                 info = buscar_cnpj_detalhado(st.session_state.get("cli_doc_edit", ""))
                 if info:
-                    # jogar direto no session_state pra preencher os campos
-                    if info.get("razao_social") or info.get("nome_fantasia"):
-                        st.session_state["cli_nome"] = info.get("razao_social") or info.get("nome_fantasia")
-                    if info.get("endereco"):
-                        st.session_state["cli_end"] = info["endereco"]
-                    if info.get("email"):
-                        st.session_state["cli_email"] = info["email"]
-                    if info.get("telefone"):
-                        st.session_state["cli_tel"] = info["telefone"]
+                    # guarda para o PRÓXIMO run
+                    st.session_state["cli_prefill_edit"] = {
+                        "nome": info.get("razao_social") or info.get("nome_fantasia") or st.session_state.get("cli_nome", ""),
+                        "doc": st.session_state.get("cli_doc_edit", ""),
+                        "endereco": info.get("endereco") or st.session_state.get("cli_end", ""),
+                        "contato": st.session_state.get("cli_contato", ""),
+                        "email": info.get("email") or st.session_state.get("cli_email", ""),
+                        "tel": info.get("telefone") or st.session_state.get("cli_tel", ""),
+                    }
                     st.success("Dados do CNPJ carregados.")
+                    _rerun()
                 else:
                     st.warning("Não consegui buscar esse CNPJ.")
 
@@ -859,27 +886,52 @@ def page_clientes():
                 st.success("Cliente atualizado.")
                 _rerun()
 
-        # ===== novo cliente =====
+        # =========================================================
+        # NOVO CLIENTE
+        # =========================================================
         else:
-            nome = st.text_input("Nome / Razão social", "", key="new_cli_nome")
-            doc = st.text_input("CNPJ / CPF", "", key="new_cli_doc")
-            end = st.text_area("Endereço", "", height=80, key="new_cli_end")
-            contato = st.text_input("Contato", "", key="new_cli_contato")
-            email = st.text_input("Email", "", key="new_cli_email")
-            tel = st.text_input("Telefone", "", key="new_cli_tel")
+            prefill = st.session_state.pop("cli_prefill_new", None)
+            if prefill:
+                st.session_state["new_cli_nome"] = prefill.get("nome", "")
+                st.session_state["new_cli_doc"] = prefill.get("doc", "")
+                st.session_state["new_cli_end"] = prefill.get("endereco", "")
+                st.session_state["new_cli_contato"] = prefill.get("contato", "")
+                st.session_state["new_cli_email"] = prefill.get("email", "")
+                st.session_state["new_cli_tel"] = prefill.get("tel", "")
+
+            nome = st.text_input("Nome / Razão social",
+                                 value=st.session_state.get("new_cli_nome", ""),
+                                 key="new_cli_nome")
+            doc = st.text_input("CNPJ / CPF",
+                                value=st.session_state.get("new_cli_doc", ""),
+                                key="new_cli_doc")
+            end = st.text_area("Endereço",
+                               value=st.session_state.get("new_cli_end", ""),
+                               height=80,
+                               key="new_cli_end")
+            contato = st.text_input("Contato",
+                                    value=st.session_state.get("new_cli_contato", ""),
+                                    key="new_cli_contato")
+            email = st.text_input("Email",
+                                  value=st.session_state.get("new_cli_email", ""),
+                                  key="new_cli_email")
+            tel = st.text_input("Telefone",
+                                value=st.session_state.get("new_cli_tel", ""),
+                                key="new_cli_tel")
 
             if st.button("Buscar dados pelo CNPJ", key="btn_buscar_cli_cnpj_new"):
                 info = buscar_cnpj_detalhado(st.session_state.get("new_cli_doc", ""))
                 if info:
-                    if info.get("razao_social") or info.get("nome_fantasia"):
-                        st.session_state["new_cli_nome"] = info.get("razao_social") or info.get("nome_fantasia")
-                    if info.get("endereco"):
-                        st.session_state["new_cli_end"] = info["endereco"]
-                    if info.get("email"):
-                        st.session_state["new_cli_email"] = info["email"]
-                    if info.get("telefone"):
-                        st.session_state["new_cli_tel"] = info["telefone"]
+                    st.session_state["cli_prefill_new"] = {
+                        "nome": info.get("razao_social") or info.get("nome_fantasia") or st.session_state.get("new_cli_nome", ""),
+                        "doc": st.session_state.get("new_cli_doc", ""),
+                        "endereco": info.get("endereco") or st.session_state.get("new_cli_end", ""),
+                        "contato": st.session_state.get("new_cli_contato", ""),
+                        "email": info.get("email") or st.session_state.get("new_cli_email", ""),
+                        "tel": info.get("telefone") or st.session_state.get("new_cli_tel", ""),
+                    }
                     st.success("Dados do CNPJ carregados.")
+                    _rerun()
                 else:
                     st.warning("Não consegui buscar esse CNPJ.")
 
@@ -925,13 +977,28 @@ def page_obras():
             obra_edit = sess.get(Obra, obra_id)
 
     with col_form:
-        # ===== editar obra =====
+        # =========================================================
+        # EDITAR OBRA
+        # =========================================================
         if obra_edit:
             st.subheader(f"Editar obra: {obra_edit.nome}")
 
-            obra_nome = st.text_input("Nome da obra", obra_edit.nome, key="obra_nome_edit")
-            obra_end = st.text_area("Endereço", obra_edit.endereco or "", height=80, key="obra_end_edit")
-            obra_doc = st.text_input("CNPJ / CPF da obra", obra_edit.documento or "", key="obra_doc_edit")
+            prefill = st.session_state.pop("obra_prefill_edit", None)
+            if prefill:
+                st.session_state["obra_nome_edit"] = prefill.get("nome", obra_edit.nome)
+                st.session_state["obra_end_edit"] = prefill.get("endereco", obra_edit.endereco or "")
+                st.session_state["obra_doc_edit"] = prefill.get("doc", obra_edit.documento or "")
+
+            obra_nome = st.text_input("Nome da obra",
+                                      value=st.session_state.get("obra_nome_edit", obra_edit.nome),
+                                      key="obra_nome_edit")
+            obra_end = st.text_area("Endereço",
+                                    value=st.session_state.get("obra_end_edit", obra_edit.endereco or ""),
+                                    height=80,
+                                    key="obra_end_edit")
+            obra_doc = st.text_input("CNPJ / CPF da obra",
+                                     value=st.session_state.get("obra_doc_edit", obra_edit.documento or ""),
+                                     key="obra_doc_edit")
 
             cli_nomes = ["(sem cliente)"] + [c.nome for c in clientes]
             cli_default = 0
@@ -942,32 +1009,27 @@ def page_obras():
                         break
             cli_sel = st.selectbox("Cliente", cli_nomes, index=cli_default, key="obra_cli_edit")
 
-            cnpj_busca = st.text_input(
-                "Buscar endereço pelo CNPJ dessa obra",
-                st.session_state.get("obra_doc_edit", ""),
-                key="obra_doc_busca"
-            )
+            cnpj_busca = st.text_input("Buscar endereço pelo CNPJ dessa obra",
+                                       value=st.session_state.get("obra_doc_edit", obra_edit.documento or ""),
+                                       key="obra_doc_busca")
             if st.button("Preencher dados da obra pelo CNPJ", key="btn_obra_cnpj_edit"):
                 info = buscar_cnpj_detalhado(st.session_state.get("obra_doc_busca", ""))
                 if info:
-                    # nome da obra pode ficar como a razão social
-                    if info.get("razao_social") or info.get("nome_fantasia"):
-                        st.session_state["obra_nome_edit"] = info.get("razao_social") or info.get("nome_fantasia")
-                    if info.get("endereco"):
-                        st.session_state["obra_end_edit"] = info["endereco"]
-                    if info.get("email"):
-                        # não temos campo de email de obra, mas podemos guardar no cliente ou ignorar
-                        pass
-                    if info.get("telefone"):
-                        # idem telefone, obra não tem; se quiser pode criar campo
-                        pass
+                    st.session_state["obra_prefill_edit"] = {
+                        "nome": info.get("razao_social") or info.get("nome_fantasia") or st.session_state.get("obra_nome_edit", obra_edit.nome),
+                        "endereco": info.get("endereco") or st.session_state.get("obra_end_edit", obra_edit.endereco or ""),
+                        "doc": st.session_state.get("obra_doc_busca", ""),
+                    }
                     st.success("Dados do CNPJ da obra preenchidos.")
+                    _rerun()
                 else:
                     st.warning("Não consegui pegar os dados desse CNPJ.")
 
             ativo = st.checkbox("Obra ativa", value=(obra_edit.ativo == 1))
             bloqueada = st.checkbox("Obra bloqueada", value=(obra_edit.bloqueada == 1))
-            motivo_bloq = st.text_input("Motivo do bloqueio", obra_edit.bloqueada_motivo or "", key="obra_motivo_edit")
+            motivo_bloq = st.text_input("Motivo do bloqueio",
+                                        value=obra_edit.bloqueada_motivo or "",
+                                        key="obra_motivo_edit")
 
             st.markdown("### Anexos")
             up_prop = st.file_uploader("Proposta", key="up_prop")
@@ -976,23 +1038,17 @@ def page_obras():
             if up_prop is not None:
                 rel = _save_anexo(up_prop, obra_edit.id, "proposta")
                 with SessionLocal() as sess:
-                    ob = sess.get(Obra, obra_edit.id)
-                    ob.anexo_proposta = rel
-                    sess.commit()
+                    ob = sess.get(Obra, obra_edit.id); ob.anexo_proposta = rel; sess.commit()
                 st.success("Proposta anexada.")
             if up_cont is not None:
                 rel = _save_anexo(up_cont, obra_edit.id, "contrato")
                 with SessionLocal() as sess:
-                    ob = sess.get(Obra, obra_edit.id)
-                    ob.anexo_contrato = rel
-                    sess.commit()
+                    ob = sess.get(Obra, obra_edit.id); ob.anexo_contrato = rel; sess.commit()
                 st.success("Contrato anexado.")
             if up_cnpj is not None:
                 rel = _save_anexo(up_cnpj, obra_edit.id, "cnpj")
                 with SessionLocal() as sess:
-                    ob = sess.get(Obra, obra_edit.id)
-                    ob.anexo_cnpj = rel
-                    sess.commit()
+                    ob = sess.get(Obra, obra_edit.id); ob.anexo_cnpj = rel; sess.commit()
                 st.success("CNPJ anexado.")
 
             st.markdown("#### Arquivos já enviados")
@@ -1023,12 +1079,28 @@ def page_obras():
                 st.success("Obra atualizada.")
                 _rerun()
 
-        # ===== nova obra =====
+        # =========================================================
+        # NOVA OBRA
+        # =========================================================
         else:
             st.subheader("Nova obra")
-            obra_nome = st.text_input("Nome da obra", "", key="obra_nome_new")
-            obra_end = st.text_area("Endereço", "", height=80, key="obra_end_new")
-            obra_doc = st.text_input("CNPJ / CPF da obra", "", key="obra_doc_new")
+
+            prefill = st.session_state.pop("obra_prefill_new", None)
+            if prefill:
+                st.session_state["obra_nome_new"] = prefill.get("nome", "")
+                st.session_state["obra_end_new"] = prefill.get("endereco", "")
+                st.session_state["obra_doc_new"] = prefill.get("doc", "")
+
+            obra_nome = st.text_input("Nome da obra",
+                                      value=st.session_state.get("obra_nome_new", ""),
+                                      key="obra_nome_new")
+            obra_end = st.text_area("Endereço",
+                                    value=st.session_state.get("obra_end_new", ""),
+                                    height=80,
+                                    key="obra_end_new")
+            obra_doc = st.text_input("CNPJ / CPF da obra",
+                                     value=st.session_state.get("obra_doc_new", ""),
+                                     key="obra_doc_new")
 
             cli_nomes = ["(sem cliente)"] + [c.nome for c in clientes]
             cli_sel = st.selectbox("Cliente", cli_nomes, index=0, key="obra_cli_new")
@@ -1036,11 +1108,13 @@ def page_obras():
             if st.button("Buscar pelo CNPJ", key="btn_nova_obra_cnpj"):
                 info = buscar_cnpj_detalhado(st.session_state.get("obra_doc_new", ""))
                 if info:
-                    if info.get("razao_social") or info.get("nome_fantasia"):
-                        st.session_state["obra_nome_new"] = info.get("razao_social") or info.get("nome_fantasia")
-                    if info.get("endereco"):
-                        st.session_state["obra_end_new"] = info["endereco"]
+                    st.session_state["obra_prefill_new"] = {
+                        "nome": info.get("razao_social") or info.get("nome_fantasia") or st.session_state.get("obra_nome_new", ""),
+                        "endereco": info.get("endereco") or st.session_state.get("obra_end_new", ""),
+                        "doc": st.session_state.get("obra_doc_new", ""),
+                    }
                     st.success("Dados do CNPJ da obra preenchidos.")
+                    _rerun()
                 else:
                     st.warning("Não consegui pegar os dados desse CNPJ.")
 
@@ -1050,15 +1124,12 @@ def page_obras():
                         nome=st.session_state.get("obra_nome_new", ""),
                         endereco=st.session_state.get("obra_end_new", ""),
                         cliente=st.session_state.get("obra_cli_new", None)
-                        if st.session_state.get("obra_cli_new") != "(sem cliente)"
-                        else None,
+                        if st.session_state.get("obra_cli_new") != "(sem cliente)" else None,
                         documento=st.session_state.get("obra_doc_new", ""),
                         ativo=1,
                     )
                     if st.session_state.get("obra_cli_new") != "(sem cliente)":
-                        cli_obj = sess.query(Cliente).filter(
-                            Cliente.nome == st.session_state.get("obra_cli_new")
-                        ).first()
+                        cli_obj = sess.query(Cliente).filter(Cliente.nome == st.session_state.get("obra_cli_new")).first()
                         if cli_obj:
                             nova.cliente_id = cli_obj.id
                     sess.add(nova)
@@ -1067,8 +1138,7 @@ def page_obras():
                 _rerun()
 
     st.markdown("</div>", unsafe_allow_html=True)
-
-    # (resto da parte de serviços por obra você pode manter igual ao que já tinha)
+    # (mantém o bloco de serviços específicos da obra que você já tinha)
 
 # =============================================================================
 # PÁGINA: SERVIÇOS
